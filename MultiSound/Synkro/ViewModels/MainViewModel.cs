@@ -317,6 +317,7 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
     private void LoadDevices()
     {
         var captureDeviceId = GetActiveCaptureDeviceId();
+        _router.CaptureSourceDeviceId = captureDeviceId;
         var devices = _deviceMonitor.GetOutputDevices();
 
         foreach (var deviceInfo in devices)
@@ -354,6 +355,7 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
     private void RefreshCaptureSource()
     {
         var captureId = GetActiveCaptureDeviceId();
+        _router.CaptureSourceDeviceId = captureId;
         foreach (var ch in Channels)
         {
             ch.IsCaptureSource = ch.DeviceId == captureId;

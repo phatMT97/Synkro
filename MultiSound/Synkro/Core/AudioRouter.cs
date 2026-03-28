@@ -21,6 +21,13 @@ public class AudioRouter : IDisposable
         set => _globalFineTuneMs = value;
     }
 
+    /// <summary>
+    /// Set this to the capture source device ID so auto-delay accounts for its latency.
+    /// When capturing from a high-latency device (e.g. BT), output devices need extra
+    /// delay to stay in sync with the native playback on the capture source.
+    /// </summary>
+    public string? CaptureSourceDeviceId { get; set; }
+
     public AudioRouter(AudioCaptureEngine captureEngine)
     {
         _captureEngine = captureEngine;
@@ -76,15 +83,18 @@ public class AudioRouter : IDisposable
             var active = _channels.Where(c => c.IsEnabled).ToList();
             if (active.Count == 0) return;
 
-            if (active.Count == 1)
+            // Include capture source latency: the capture device plays audio natively,
+            // so output devices must be delayed to match its hardware latency.
+            long captureLatency = 0;
+            if (CaptureSourceDeviceId != null)
             {
-                // Single channel: only apply fine-tune as delay
-                active[0].DelayMs = Math.Max(0, _globalFineTuneMs);
-                return;
+                var captureCh = _channels.FirstOrDefault(c => c.DeviceId == CaptureSourceDeviceId);
+                if (captureCh != null)
+                    captureLatency = captureCh.GetEstimatedLatencyMs();
             }
 
-            // Multiple channels: auto-compensate + fine-tune
-            long maxLatency = active.Max(c => c.GetEstimatedLatencyMs());
+            long maxOutputLatency = active.Max(c => c.GetEstimatedLatencyMs());
+            long maxLatency = Math.Max(captureLatency, maxOutputLatency);
 
             foreach (var channel in active)
             {
