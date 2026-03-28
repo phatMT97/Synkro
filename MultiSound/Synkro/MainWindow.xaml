@@ -174,6 +174,93 @@
             <Setter Property="HorizontalScrollBarVisibility" Value="Disabled"/>
         </Style>
 
+        <!-- Dark ComboBox -->
+        <ControlTemplate x:Key="ComboBoxToggle" TargetType="ToggleButton">
+            <Border x:Name="bd" Background="{StaticResource BgBrush}"
+                    BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
+                    CornerRadius="6" Padding="8,4">
+                <Grid>
+                    <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center"
+                                      Margin="0,0,18,0"/>
+                    <Path x:Name="arrow" Data="M0,0 L4,4 L8,0" Stroke="{StaticResource SubtextBrush}"
+                          StrokeThickness="1.5" HorizontalAlignment="Right"
+                          VerticalAlignment="Center" Margin="0,1,2,0"/>
+                </Grid>
+            </Border>
+            <ControlTemplate.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter TargetName="bd" Property="BorderBrush" Value="{StaticResource AccentBrush}"/>
+                </Trigger>
+            </ControlTemplate.Triggers>
+        </ControlTemplate>
+
+        <Style x:Key="DarkCombo" TargetType="ComboBox">
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBox">
+                        <Grid>
+                            <ToggleButton Template="{StaticResource ComboBoxToggle}"
+                                          IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
+                                          Focusable="False" ClickMode="Press"/>
+                            <ContentPresenter IsHitTestVisible="False"
+                                              Content="{TemplateBinding SelectionBoxItem}"
+                                              ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                              Margin="10,5,24,5"
+                                              VerticalAlignment="Center"
+                                              HorizontalAlignment="Left">
+                                <ContentPresenter.Resources>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+                                    </Style>
+                                </ContentPresenter.Resources>
+                            </ContentPresenter>
+                            <Popup IsOpen="{TemplateBinding IsDropDownOpen}"
+                                   Placement="Bottom" Focusable="False"
+                                   AllowsTransparency="True" PopupAnimation="Fade">
+                                <Border Background="{StaticResource SurfaceBrush}"
+                                        BorderBrush="{StaticResource BorderBrush}"
+                                        BorderThickness="1" CornerRadius="6"
+                                        Padding="2" Margin="0,2,0,0"
+                                        MaxHeight="200">
+                                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                        <StackPanel IsItemsHost="True"/>
+                                    </ScrollViewer>
+                                </Border>
+                            </Popup>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="{x:Type ComboBoxItem}" TargetType="ComboBoxItem">
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Padding" Value="8,5"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBoxItem">
+                        <Border x:Name="bd" Background="{TemplateBinding Background}"
+                                CornerRadius="4" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="bd" Property="Background" Value="{StaticResource BorderBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="bd" Property="Background" Value="{StaticResource AccentBrush}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <!-- Close button (macOS-style red dot) -->
         <Style x:Key="CloseBtn" TargetType="Button">
             <Setter Property="Cursor" Value="Hand"/>
@@ -238,13 +325,28 @@
             <!-- Content -->
             <Grid Grid.Row="1" Margin="16,12,16,16">
                 <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
                     <RowDefinition Height="*"/>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
+                <!-- Capture source selector -->
+                <Border Grid.Row="0" Background="{StaticResource SurfaceBrush}"
+                        CornerRadius="8" Padding="12,8" Margin="0,0,0,10">
+                    <DockPanel>
+                        <TextBlock Text="Source"
+                                   Foreground="{StaticResource SubtextBrush}"
+                                   FontSize="11" VerticalAlignment="Center"
+                                   DockPanel.Dock="Left" Margin="0,0,8,0"/>
+                        <ComboBox ItemsSource="{Binding CaptureDevices}"
+                                  SelectedItem="{Binding SelectedCaptureDevice}"
+                                  Style="{StaticResource DarkCombo}"/>
+                    </DockPanel>
+                </Border>
+
                 <!-- Device list -->
-                <ScrollViewer Grid.Row="0"
+                <ScrollViewer Grid.Row="1"
                               VerticalScrollBarVisibility="Hidden"
                               HorizontalScrollBarVisibility="Disabled">
                     <ItemsControl ItemsSource="{Binding Channels}">
@@ -330,7 +432,7 @@
                 </ScrollViewer>
 
                 <!-- Fine-tune section -->
-                <Border Grid.Row="1" Background="{StaticResource SurfaceBrush}"
+                <Border Grid.Row="2" Background="{StaticResource SurfaceBrush}"
                         CornerRadius="8" Padding="14,12" Margin="0,4,0,14">
                     <StackPanel>
                         <TextBlock Text="Sync Fine-tune"
@@ -375,7 +477,7 @@
                 </Border>
 
                 <!-- Start/Stop button -->
-                <Button Grid.Row="2"
+                <Button Grid.Row="3"
                         Content="{Binding StartStopText}"
                         Command="{Binding StartStopCommand}"
                         Style="{StaticResource PrimaryBtn}"

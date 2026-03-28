@@ -22,6 +22,12 @@ public class AudioOutputChannel : IDisposable
     private float _savedEndpointVolume = -1f;
     private bool _endpointBoosted;
 
+    // Resampling support for format-incompatible devices (e.g. FxSound virtual device)
+    private bool _needsResample;
+    private float _resampleRatio;
+    private int _inputChannels;
+    private float[]? _resampleBuffer;
+
     public const float MaxVolume = 5.0f;
 
     private const int WiredLatencyEstimateMs = 10;
@@ -86,33 +92,94 @@ public class AudioOutputChannel : IDisposable
         {
             ErrorMessage = string.Empty;
             _waveFormat = captureFormat;
-            _bufferedProvider = new BufferedWaveProvider(captureFormat)
-            {
-                BufferDuration = TimeSpan.FromMilliseconds(500),
-                DiscardOnBufferOverflow = true
-            };
-
-            _delayBuffer = new DelayBuffer(
-                captureFormat.SampleRate,
-                captureFormat.Channels,
-                _delayMs);
-
-            int maxSamples = (int)(captureFormat.SampleRate * captureFormat.Channels * 0.1);
-            _processBuffer = new float[maxSamples];
-            _delayedBuffer = new float[maxSamples];
-            _byteBuffer = new byte[maxSamples * 4];
-
-            // Lower latency for wired, standard for Bluetooth
+            _needsResample = false;
+            _inputChannels = captureFormat.Channels;
             _outputLatencyMs = IsBluetooth ? 100 : 30;
             _output?.Stop();
             _output?.Dispose();
-            _output = new WasapiOut(_device, AudioClientShareMode.Shared, true, _outputLatencyMs);
-            _output.Init(_bufferedProvider);
+            _output = null;
+
+            // Build candidate formats: capture format first, then device mix format,
+            // then common fallbacks. Stops at the first one that works.
+            var candidates = new List<WaveFormat> { captureFormat };
+
+            try
+            {
+                var mix = _device.AudioClient.MixFormat;
+                var mixIeee = WaveFormat.CreateIeeeFloatWaveFormat(mix.SampleRate, captureFormat.Channels);
+                if (mix.SampleRate != captureFormat.SampleRate)
+                    candidates.Add(mixIeee);
+            }
+            catch { }
+
+            // Common sample rates as last resort
+            foreach (int rate in new[] { 48000, 44100 })
+            {
+                if (candidates.All(c => c.SampleRate != rate))
+                    candidates.Add(WaveFormat.CreateIeeeFloatWaveFormat(rate, captureFormat.Channels));
+            }
+
+            string? lastError = null;
+            WaveFormat? successFormat = null;
+
+            foreach (var fmt in candidates)
+            {
+                // Try event-driven mode first (lower latency)
+                lastError = TryInitOutput(fmt, useEventSync: true);
+                if (lastError == null) { successFormat = fmt; break; }
+
+                // Try timer-driven mode (more compatible)
+                lastError = TryInitOutput(fmt, useEventSync: false);
+                if (lastError == null) { successFormat = fmt; break; }
+            }
+
+            if (successFormat == null || _output == null)
+            {
+                ErrorMessage = lastError ?? "Cannot initialize output";
+                _output = null;
+                return;
+            }
+
+            int outSampleRate = successFormat.SampleRate;
+            if (outSampleRate != captureFormat.SampleRate)
+            {
+                _needsResample = true;
+                _resampleRatio = (float)outSampleRate / captureFormat.SampleRate;
+            }
+
+            _delayBuffer = new DelayBuffer(outSampleRate, captureFormat.Channels, _delayMs);
+
+            int maxSamples = (int)(outSampleRate * captureFormat.Channels * 0.1);
+            _processBuffer = new float[maxSamples];
+            _delayedBuffer = new float[maxSamples];
+            _byteBuffer = new byte[maxSamples * 4];
         }
         catch (Exception ex)
         {
             ErrorMessage = ex.Message;
             _output = null;
+        }
+    }
+
+    private string? TryInitOutput(WaveFormat format, bool useEventSync)
+    {
+        try
+        {
+            _output?.Dispose();
+            _bufferedProvider = new BufferedWaveProvider(format)
+            {
+                BufferDuration = TimeSpan.FromMilliseconds(500),
+                DiscardOnBufferOverflow = true
+            };
+            _output = new WasapiOut(_device, AudioClientShareMode.Shared, useEventSync, _outputLatencyMs);
+            _output.Init(_bufferedProvider);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _output?.Dispose();
+            _output = null;
+            return ex.Message;
         }
     }
 
@@ -133,22 +200,65 @@ public class AudioOutputChannel : IDisposable
     {
         if (_bufferedProvider == null || _delayBuffer == null || _waveFormat == null)
             return;
-        if (_processBuffer == null || count > _processBuffer.Length)
+
+        float[] workSamples = samples;
+        int workCount = count;
+
+        if (_needsResample)
         {
-            _processBuffer = new float[count];
-            _delayedBuffer = new float[count];
-            _byteBuffer = new byte[count * 4];
+            workCount = Resample(samples, count);
+            workSamples = _resampleBuffer!;
         }
 
-        VolumeProcessor.Apply(samples, _processBuffer, count, _volume);
-        _delayBuffer.Process(_processBuffer, _delayedBuffer!, count);
+        if (_processBuffer == null || workCount > _processBuffer.Length)
+        {
+            _processBuffer = new float[workCount];
+            _delayedBuffer = new float[workCount];
+            _byteBuffer = new byte[workCount * 4];
+        }
+
+        VolumeProcessor.Apply(workSamples, _processBuffer, workCount, _volume);
+        _delayBuffer.Process(_processBuffer, _delayedBuffer!, workCount);
 
         // Safety clamp — tanh compression keeps signal in range, this is a fallback
-        for (int i = 0; i < count; i++)
+        for (int i = 0; i < workCount; i++)
             _delayedBuffer![i] = Math.Clamp(_delayedBuffer[i], -1.0f, 1.0f);
 
-        Buffer.BlockCopy(_delayedBuffer!, 0, _byteBuffer!, 0, count * 4);
-        _bufferedProvider.AddSamples(_byteBuffer!, 0, count * 4);
+        Buffer.BlockCopy(_delayedBuffer!, 0, _byteBuffer!, 0, workCount * 4);
+        _bufferedProvider.AddSamples(_byteBuffer!, 0, workCount * 4);
+    }
+
+    /// <summary>
+    /// Linear interpolation resampler for converting between sample rates.
+    /// Returns the number of output samples.
+    /// </summary>
+    private int Resample(float[] input, int inputCount)
+    {
+        int channels = _inputChannels;
+        int inputFrames = inputCount / channels;
+        int outputFrames = (int)(inputFrames * _resampleRatio);
+        int outputCount = outputFrames * channels;
+
+        if (_resampleBuffer == null || _resampleBuffer.Length < outputCount)
+            _resampleBuffer = new float[outputCount];
+
+        double invRatio = 1.0 / _resampleRatio;
+        for (int i = 0; i < outputFrames; i++)
+        {
+            double srcPos = i * invRatio;
+            int srcIdx = (int)srcPos;
+            float frac = (float)(srcPos - srcIdx);
+            int nextIdx = Math.Min(srcIdx + 1, inputFrames - 1);
+
+            for (int ch = 0; ch < channels; ch++)
+            {
+                float s1 = input[srcIdx * channels + ch];
+                float s2 = input[nextIdx * channels + ch];
+                _resampleBuffer[i * channels + ch] = s1 + (s2 - s1) * frac;
+            }
+        }
+
+        return outputCount;
     }
 
     /// Returns estimated total device latency in ms.

@@ -13,17 +13,27 @@ public class AudioCaptureEngine : IDisposable
     public event EventHandler? CaptureStarted;
     public event EventHandler? CaptureStopped;
 
-    public void Start()
+    /// <summary>
+    /// Start capturing from a specific device, or the default render device if null.
+    /// </summary>
+    public void Start(MMDevice? device = null)
     {
         _capture?.StopRecording();
         _capture?.Dispose();
 
-        // Detect default render device (capture source)
-        using var enumerator = new MMDeviceEnumerator();
-        var defaultDevice = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-        CaptureDeviceId = defaultDevice.ID;
+        if (device != null)
+        {
+            CaptureDeviceId = device.ID;
+            _capture = new WasapiLoopbackCapture(device);
+        }
+        else
+        {
+            using var enumerator = new MMDeviceEnumerator();
+            var defaultDevice = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+            CaptureDeviceId = defaultDevice.ID;
+            _capture = new WasapiLoopbackCapture();
+        }
 
-        _capture = new WasapiLoopbackCapture();
         _capture.DataAvailable += OnDataAvailable;
         _capture.RecordingStopped += OnRecordingStopped;
         _capture.StartRecording();

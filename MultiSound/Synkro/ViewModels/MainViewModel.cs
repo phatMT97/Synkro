@@ -97,6 +97,14 @@ public class RelayCommand : ICommand
     }
 }
 
+public class CaptureDeviceItem
+{
+    public string Id { get; init; } = "";
+    public string Name { get; init; } = "";
+    public bool IsDefault { get; init; }
+    public override string ToString() => IsDefault ? $"{Name} (Default)" : Name;
+}
+
 public class MainViewModel : INotifyPropertyChanged, IDisposable
 {
     private readonly AudioCaptureEngine _captureEngine;
@@ -111,8 +119,10 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
     private bool _volumeSyncEnabled = false;
     private int _globalFineTuneMs;
     private string _status = "Stopped";
+    private CaptureDeviceItem? _selectedCaptureDevice;
 
     public ObservableCollection<ChannelViewModel> Channels { get; } = new();
+    public ObservableCollection<CaptureDeviceItem> CaptureDevices { get; } = new();
 
     public bool IsPlaying
     {
@@ -128,6 +138,28 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         get => _status;
         private set { _status = value; OnPropertyChanged(); }
+    }
+
+    public CaptureDeviceItem? SelectedCaptureDevice
+    {
+        get => _selectedCaptureDevice;
+        set
+        {
+            if (_selectedCaptureDevice?.Id == value?.Id) return;
+            _selectedCaptureDevice = value;
+            OnPropertyChanged();
+
+            if (value != null)
+            {
+                _settings.CaptureDeviceId = value.IsDefault ? null : value.Id;
+                _settingsService.Save(_settings);
+            }
+
+            if (IsPlaying)
+                RestartWithNewCaptureDevice();
+            else
+                RefreshCaptureSource();
+        }
     }
 
     public int GlobalFineTuneMs
@@ -182,7 +214,75 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
         _volumeSync.VolumeScaleChanged += OnSystemVolumeChanged;
         _volumeSync.Start();
 
+        LoadCaptureDevices();
         LoadDevices();
+    }
+
+    private void LoadCaptureDevices()
+    {
+        CaptureDevices.Clear();
+
+        using var enumerator = new MMDeviceEnumerator();
+        string defaultId;
+        try
+        {
+            var defaultDev = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+            defaultId = defaultDev.ID;
+        }
+        catch
+        {
+            defaultId = "";
+        }
+
+        // "Auto" option uses the system default
+        CaptureDevices.Add(new CaptureDeviceItem
+        {
+            Id = "__default__",
+            Name = "Auto (System Default)",
+            IsDefault = true
+        });
+
+        foreach (var device in enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
+        {
+            CaptureDevices.Add(new CaptureDeviceItem
+            {
+                Id = device.ID,
+                Name = device.FriendlyName,
+                IsDefault = false
+            });
+        }
+
+        // Restore saved selection
+        if (_settings.CaptureDeviceId != null)
+        {
+            var saved = CaptureDevices.FirstOrDefault(d => d.Id == _settings.CaptureDeviceId);
+            _selectedCaptureDevice = saved ?? CaptureDevices[0];
+        }
+        else
+        {
+            _selectedCaptureDevice = CaptureDevices[0]; // Auto
+        }
+    }
+
+    private string GetActiveCaptureDeviceId()
+    {
+        if (_selectedCaptureDevice == null || _selectedCaptureDevice.IsDefault)
+        {
+            using var enumerator = new MMDeviceEnumerator();
+            try
+            {
+                return enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia).ID;
+            }
+            catch { return ""; }
+        }
+        return _selectedCaptureDevice.Id;
+    }
+
+    private MMDevice? GetSelectedCaptureMMDevice()
+    {
+        if (_selectedCaptureDevice == null || _selectedCaptureDevice.IsDefault)
+            return null; // null = use default
+        return _deviceMonitor.GetDeviceById(_selectedCaptureDevice.Id);
     }
 
     private void OnUserVolumeChanged()
@@ -216,19 +316,16 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private void LoadDevices()
     {
-        // Get default device to detect capture source
-        using var enumerator = new MMDeviceEnumerator();
-        var defaultDevice = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-        var defaultDeviceId = defaultDevice.ID;
-
+        var captureDeviceId = GetActiveCaptureDeviceId();
         var devices = _deviceMonitor.GetOutputDevices();
+
         foreach (var deviceInfo in devices)
         {
             var mmDevice = _deviceMonitor.GetDeviceById(deviceInfo.Id);
             if (mmDevice == null) continue;
 
             var channel = _router.AddDevice(mmDevice);
-            bool isCaptureSource = deviceInfo.Id == defaultDeviceId;
+            bool isCaptureSource = deviceInfo.Id == captureDeviceId;
 
             // Apply saved settings, but always disable capture source to prevent echo
             bool enabled;
@@ -253,6 +350,32 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
+    /// <summary>Update which channel is marked as capture source without reloading.</summary>
+    private void RefreshCaptureSource()
+    {
+        var captureId = GetActiveCaptureDeviceId();
+        foreach (var ch in Channels)
+        {
+            ch.IsCaptureSource = ch.DeviceId == captureId;
+        }
+    }
+
+    private void RestartWithNewCaptureDevice()
+    {
+        // Full restart: stop → reload capture source → start
+        _router.StopAll();
+        _captureEngine.Stop();
+        IsPlaying = false;
+
+        RefreshCaptureSource();
+
+        _captureEngine.Start(GetSelectedCaptureMMDevice());
+        _router.InitializeAll();
+        _router.StartAll();
+        IsPlaying = true;
+        Status = "Playing System Audio";
+    }
+
     private void TogglePlayback()
     {
         if (IsPlaying)
@@ -264,7 +387,7 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
         }
         else
         {
-            _captureEngine.Start();
+            _captureEngine.Start(GetSelectedCaptureMMDevice());
             _router.InitializeAll();
             _router.StartAll();
             IsPlaying = true;
@@ -313,9 +436,14 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             System.Windows.Application.Current?.Dispatcher.Invoke(() =>
             {
-                _captureEngine.Stop();
-                _captureEngine.Start();
-                _router.InitializeAll();
+                // Only auto-restart capture if using Auto (default) mode
+                if (_selectedCaptureDevice == null || _selectedCaptureDevice.IsDefault)
+                {
+                    _captureEngine.Stop();
+                    _captureEngine.Start();
+                    _router.InitializeAll();
+                    RefreshCaptureSource();
+                }
             });
         }
     }

@@ -4,6 +4,7 @@ public class AppSettings
 {
     public bool MinimizeToTray { get; set; } = true;
     public int GlobalFineTuneOffsetMs { get; set; } = 0;
+    public string? CaptureDeviceId { get; set; }
     public Dictionary<string, DeviceSettings> Devices { get; set; } = new();
 }
 
