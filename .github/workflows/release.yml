@@ -20,17 +20,48 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Publish single-file
+      - name: Get version from tag
+        id: version
+        shell: bash
+        run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish light (framework-dependent, ~2MB)
         run: |
           dotnet publish MultiSound/Synkro/Synkro.csproj `
             -c Release `
             -r win-x64 `
             --self-contained false `
             /p:PublishSingleFile=true `
-            -o publish
+            -o publish-light
+
+      - name: Publish standalone (self-contained, ~157MB)
+        run: |
+          dotnet publish MultiSound/Synkro/Synkro.csproj `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            /p:PublishSingleFile=true `
+            /p:IncludeNativeLibrariesForSelfExtract=true `
+            -o publish-standalone
+
+      - name: Rename artifacts
+        shell: bash
+        run: |
+          VERSION=${{ steps.version.outputs.tag }}
+          mv publish-light/Synkro.exe "publish-light/Synkro-${VERSION}-light.exe"
+          mv publish-standalone/Synkro.exe "publish-standalone/Synkro-${VERSION}-standalone.exe"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: publish/Synkro.exe
           generate_release_notes: true
+          body: |
+            ## Downloads
+
+            | File | Size | Requirement |
+            |------|------|-------------|
+            | `Synkro-${{ steps.version.outputs.tag }}-standalone.exe` | ~157MB | None — runs on any Windows 10/11 |
+            | `Synkro-${{ steps.version.outputs.tag }}-light.exe` | ~2MB | Requires [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0) |
+          files: |
+            publish-standalone/Synkro-${{ steps.version.outputs.tag }}-standalone.exe
+            publish-light/Synkro-${{ steps.version.outputs.tag }}-light.exe
