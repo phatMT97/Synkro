@@ -82,7 +82,11 @@ public class DeviceMonitorService : IMMNotificationClient, IDisposable
 
     public void Dispose()
     {
-        _enumerator.UnregisterEndpointNotificationCallback(this);
-        _enumerator.Dispose();
+        try
+        {
+            _enumerator?.UnregisterEndpointNotificationCallback(this);
+            _enumerator?.Dispose();
+        }
+        catch { }
     }
 }

@@ -13,7 +13,11 @@ public class ChannelViewModel : INotifyPropertyChanged
 {
     private readonly AudioOutputChannel _channel;
     private readonly Action _onSettingsChanged;
+    private readonly Action _onUserVolumeChanged;
     private bool _isEnabled;
+
+    /// <summary>User-configured base volume. System volume scaling is applied on top of this.</summary>
+    public float BaseVolume { get; set; } = 1.0f;
 
     public string DeviceId => _channel.DeviceId;
     public string Name => _channel.IsBluetooth
@@ -42,17 +46,28 @@ public class ChannelViewModel : INotifyPropertyChanged
         set
         {
             _channel.Volume = value;
+            BaseVolume = value; // user manually set → update base
             OnPropertyChanged();
             _onSettingsChanged();
+            _onUserVolumeChanged();
         }
+    }
+
+    /// <summary>Set volume from system sync without updating BaseVolume.</summary>
+    public void SetSyncedVolume(float vol)
+    {
+        _channel.Volume = vol;
+        OnPropertyChanged(nameof(Volume));
     }
 
     public int DelayMs => _channel.DelayMs;
 
-    public ChannelViewModel(AudioOutputChannel channel, Action onSettingsChanged, bool enabled = true)
+    public ChannelViewModel(AudioOutputChannel channel, Action onSettingsChanged,
+                            Action onUserVolumeChanged, bool enabled = true)
     {
         _channel = channel;
         _onSettingsChanged = onSettingsChanged;
+        _onUserVolumeChanged = onUserVolumeChanged;
         _isEnabled = enabled;
         _channel.IsEnabled = enabled;
     }
@@ -88,8 +103,12 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
     private readonly AudioRouter _router;
     private readonly DeviceMonitorService _deviceMonitor;
     private readonly SettingsService _settingsService;
+    private readonly VolumeSyncService _volumeSync;
+    private float _pendingScale;
+    private System.Threading.Timer? _syncDebounce;
     private AppSettings _settings;
     private bool _isPlaying;
+    private bool _volumeSyncEnabled = false;
     private int _globalFineTuneMs;
     private string _status = "Stopped";
 
@@ -125,6 +144,23 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
+    public bool VolumeSyncEnabled
+    {
+        get => _volumeSyncEnabled;
+        set
+        {
+            _volumeSyncEnabled = value;
+            if (value)
+            {
+                // Capture current state as reference point
+                _volumeSync.MarkReferenceVolume();
+                foreach (var ch in Channels)
+                    ch.BaseVolume = ch.Volume;
+            }
+            OnPropertyChanged();
+        }
+    }
+
     public ICommand StartStopCommand { get; }
 
     public MainViewModel()
@@ -134,6 +170,7 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
         _captureEngine = new AudioCaptureEngine();
         _router = new AudioRouter(_captureEngine);
         _deviceMonitor = new DeviceMonitorService();
+        _volumeSync = new VolumeSyncService();
         _globalFineTuneMs = _settings.GlobalFineTuneOffsetMs;
         _router.GlobalFineTuneMs = _globalFineTuneMs;
 
@@ -142,8 +179,39 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
         _deviceMonitor.DeviceRemoved += OnDeviceRemoved;
         _deviceMonitor.DeviceAdded += OnDeviceAdded;
         _deviceMonitor.DefaultDeviceChanged += OnDefaultDeviceChanged;
+        _volumeSync.VolumeScaleChanged += OnSystemVolumeChanged;
+        _volumeSync.Start();
 
         LoadDevices();
+    }
+
+    private void OnUserVolumeChanged()
+    {
+        // User manually changed a channel volume → update reference point
+        _volumeSync.MarkReferenceVolume();
+    }
+
+    private void OnSystemVolumeChanged(object? sender, float scale)
+    {
+        if (!_volumeSyncEnabled) return;
+
+        // Debounce rapid volume changes (e.g. slider drag) to avoid dispatcher starvation
+        _pendingScale = scale;
+        _syncDebounce?.Dispose();
+        _syncDebounce = new System.Threading.Timer(_ =>
+        {
+            System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
+            {
+                foreach (var ch in Channels)
+                {
+                    if (ch.IsEnabled && !ch.IsCaptureSource && !ch.IsBluetooth)
+                    {
+                        float newVol = Math.Clamp(ch.BaseVolume * _pendingScale, 0f, AudioOutputChannel.MaxVolume);
+                        ch.SetSyncedVolume(newVol);
+                    }
+                }
+            });
+        }, null, 75, Timeout.Infinite);
     }
 
     private void LoadDevices()
@@ -176,9 +244,10 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
                 enabled = !isCaptureSource;
             }
 
-            var vm = new ChannelViewModel(channel, SaveSettings, enabled)
+            var vm = new ChannelViewModel(channel, SaveSettings, OnUserVolumeChanged, enabled)
             {
-                IsCaptureSource = isCaptureSource
+                IsCaptureSource = isCaptureSource,
+                BaseVolume = channel.Volume
             };
             Channels.Add(vm);
         }
@@ -234,7 +303,7 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
                 channel.Start();
             }
 
-            Channels.Add(new ChannelViewModel(channel, SaveSettings));
+            Channels.Add(new ChannelViewModel(channel, SaveSettings, OnUserVolumeChanged));
         });
     }
 
@@ -274,6 +343,8 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
     public void Dispose()
     {
         SaveSettings();
+        _syncDebounce?.Dispose();
+        _volumeSync.Dispose();
         _router.Dispose();
         _captureEngine.Dispose();
         _deviceMonitor.Dispose();

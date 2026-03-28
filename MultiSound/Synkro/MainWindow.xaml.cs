@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Input;
+using Synkro.Core;
 using Synkro.ViewModels;
 
 namespace Synkro;
@@ -34,7 +35,7 @@ public partial class MainWindow : Window
     private void VolUp_Click(object sender, RoutedEventArgs e)
     {
         if (((Button)sender).Tag is ChannelViewModel vm)
-            vm.Volume = Math.Min(3, vm.Volume + 0.05f);
+            vm.Volume = Math.Min(AudioOutputChannel.MaxVolume, vm.Volume + 0.05f);
     }
 
     private void FineTuneDown_Click(object sender, RoutedEventArgs e)

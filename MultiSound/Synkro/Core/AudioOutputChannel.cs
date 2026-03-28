@@ -18,9 +18,14 @@ public class AudioOutputChannel : IDisposable
     private float[]? _delayedBuffer;
     private byte[]? _byteBuffer;
 
-    // Estimated latency: wired ~10ms, Bluetooth ~180ms
+    public const float MaxVolume = 5.0f;
+
     private const int WiredLatencyEstimateMs = 10;
     private const int BluetoothLatencyEstimateMs = 180;
+
+    // PKEY_Device_EnumeratorName = {A45C254E-DF1C-4EFD-8020-67D146A850E0}, 24
+    private static readonly NAudio.CoreAudioApi.PropertyKey PKEY_EnumeratorName =
+        new(new Guid("{A45C254E-DF1C-4EFD-8020-67D146A850E0}"), 24);
 
     public string DeviceId => _device.ID;
     public string FriendlyName => _device.FriendlyName;
@@ -33,7 +38,7 @@ public class AudioOutputChannel : IDisposable
     public float Volume
     {
         get => _volume;
-        set => _volume = Math.Clamp(value, 0.0f, 3.0f);
+        set => _volume = Math.Clamp(value, 0.0f, MaxVolume);
     }
 
     public int DelayMs
@@ -56,9 +61,9 @@ public class AudioOutputChannel : IDisposable
     {
         try
         {
-            // PnP instance ID contains "BTHENUM" for Bluetooth devices
-            IsBluetooth = _device.InstanceId
-                .Contains("BTHENUM", StringComparison.OrdinalIgnoreCase);
+            var prop = _device.Properties[PKEY_EnumeratorName];
+            var enumeratorName = prop?.Value as string ?? "";
+            IsBluetooth = enumeratorName.Contains("BTH", StringComparison.OrdinalIgnoreCase);
         }
         catch
         {

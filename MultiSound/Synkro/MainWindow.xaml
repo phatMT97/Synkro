@@ -305,7 +305,8 @@
                                                     Click="VolUp_Click" Tag="{Binding}"
                                                     DockPanel.Dock="Right" Margin="4,0,4,0"
                                                     FontSize="14" FontWeight="Bold"/>
-                                            <Slider Minimum="0" Maximum="3"
+                                            <!-- Maximum must match AudioOutputChannel.MaxVolume -->
+                                            <Slider Minimum="0" Maximum="5"
                                                     Value="{Binding Volume}"
                                                     Style="{StaticResource ModernSlider}"
                                                     TickFrequency="0.01"
@@ -362,6 +363,14 @@
                                     VerticalAlignment="Center"
                                     Margin="4,0"/>
                         </DockPanel>
+                        <!-- Volume sync toggle -->
+                        <CheckBox Style="{StaticResource ModernCheck}"
+                                  IsChecked="{Binding VolumeSyncEnabled}"
+                                  Margin="0,10,0,0">
+                            <TextBlock Text="Sync volume with system"
+                                       Foreground="{StaticResource SubtextBrush}"
+                                       FontSize="11"/>
+                        </CheckBox>
                     </StackPanel>
                 </Border>
 
