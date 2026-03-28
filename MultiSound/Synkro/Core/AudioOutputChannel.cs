@@ -18,6 +18,10 @@ public class AudioOutputChannel : IDisposable
     private float[]? _delayedBuffer;
     private byte[]? _byteBuffer;
 
+    private AudioEndpointVolume? _endpointVolume;
+    private float _savedEndpointVolume = -1f;
+    private bool _endpointBoosted;
+
     public const float MaxVolume = 5.0f;
 
     private const int WiredLatencyEstimateMs = 10;
@@ -38,7 +42,11 @@ public class AudioOutputChannel : IDisposable
     public float Volume
     {
         get => _volume;
-        set => _volume = Math.Clamp(value, 0.0f, MaxVolume);
+        set
+        {
+            _volume = Math.Clamp(value, 0.0f, MaxVolume);
+            ApplyEndpointBoost();
+        }
     }
 
     public int DelayMs
@@ -55,6 +63,7 @@ public class AudioOutputChannel : IDisposable
     {
         _device = device;
         DetectBluetooth();
+        try { _endpointVolume = _device.AudioEndpointVolume; } catch { }
     }
 
     private void DetectBluetooth()
@@ -134,7 +143,7 @@ public class AudioOutputChannel : IDisposable
         VolumeProcessor.Apply(samples, _processBuffer, count, _volume);
         _delayBuffer.Process(_processBuffer, _delayedBuffer!, count);
 
-        // Clamp samples to [-1, 1] to prevent clipping when volume > 100%
+        // Safety clamp — tanh compression keeps signal in range, this is a fallback
         for (int i = 0; i < count; i++)
             _delayedBuffer![i] = Math.Clamp(_delayedBuffer[i], -1.0f, 1.0f);
 
@@ -152,10 +161,51 @@ public class AudioOutputChannel : IDisposable
     public void Stop()
     {
         _output?.Stop();
+        RestoreEndpointVolume();
+    }
+
+    /// <summary>
+    /// Gradually scale device endpoint volume for boost above 100%.
+    /// At 100%: endpoint stays at original. At 500%: endpoint at max (1.0).
+    /// Linear interpolation between — no sudden jumps.
+    /// </summary>
+    private void ApplyEndpointBoost()
+    {
+        if (_endpointVolume == null) return;
+        try
+        {
+            if (_volume > 1.0f)
+            {
+                if (!_endpointBoosted)
+                {
+                    _savedEndpointVolume = _endpointVolume.MasterVolumeLevelScalar;
+                    _endpointBoosted = true;
+                }
+                // Lerp from saved → 1.0 as volume goes from 1.0 → MaxVolume
+                float t = (_volume - 1.0f) / (MaxVolume - 1.0f);
+                float target = _savedEndpointVolume + (1.0f - _savedEndpointVolume) * t;
+                _endpointVolume.MasterVolumeLevelScalar = target;
+            }
+            else if (_endpointBoosted)
+            {
+                if (_savedEndpointVolume >= 0f)
+                    _endpointVolume.MasterVolumeLevelScalar = _savedEndpointVolume;
+                _endpointBoosted = false;
+            }
+        }
+        catch { }
+    }
+
+    private void RestoreEndpointVolume()
+    {
+        if (!_endpointBoosted || _endpointVolume == null || _savedEndpointVolume < 0f) return;
+        try { _endpointVolume.MasterVolumeLevelScalar = _savedEndpointVolume; } catch { }
+        _endpointBoosted = false;
     }
 
     public void Dispose()
     {
+        RestoreEndpointVolume();
         _output?.Stop();
         _output?.Dispose();
         _output = null;
