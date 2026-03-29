@@ -5,8 +5,15 @@ namespace Synkro.Core;
 
 public class AudioCaptureEngine : IDisposable
 {
+    private readonly object _captureLock = new();
     private WasapiLoopbackCapture? _capture;
-    public WaveFormat? WaveFormat => _capture?.WaveFormat;
+    private float[]? _sampleBuffer;
+
+    public WaveFormat? WaveFormat
+    {
+        get { lock (_captureLock) return _capture?.WaveFormat; }
+    }
+
     public string? CaptureDeviceId { get; private set; }
 
     public event EventHandler<float[]>? DataAvailable;
@@ -15,25 +22,29 @@ public class AudioCaptureEngine : IDisposable
 
     public void Start(MMDevice? device = null)
     {
-        _capture?.StopRecording();
-        _capture?.Dispose();
-
-        if (device != null)
+        lock (_captureLock)
         {
-            CaptureDeviceId = device.ID;
-            _capture = new WasapiLoopbackCapture(device);
-        }
-        else
-        {
-            using var enumerator = new MMDeviceEnumerator();
-            var defaultDevice = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-            CaptureDeviceId = defaultDevice.ID;
-            _capture = new WasapiLoopbackCapture();
+            _capture?.StopRecording();
+            _capture?.Dispose();
+
+            if (device != null)
+            {
+                CaptureDeviceId = device.ID;
+                _capture = new WasapiLoopbackCapture(device);
+            }
+            else
+            {
+                using var enumerator = new MMDeviceEnumerator();
+                using var defaultDevice = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+                CaptureDeviceId = defaultDevice.ID;
+                _capture = new WasapiLoopbackCapture();
+            }
+
+            _capture.DataAvailable += OnDataAvailable;
+            _capture.RecordingStopped += OnRecordingStopped;
+            _capture.StartRecording();
         }
 
-        _capture.DataAvailable += OnDataAvailable;
-        _capture.RecordingStopped += OnRecordingStopped;
-        _capture.StartRecording();
         CaptureStarted?.Invoke(this, EventArgs.Empty);
     }
 
@@ -41,9 +52,13 @@ public class AudioCaptureEngine : IDisposable
     {
         if (e.BytesRecorded == 0) return;
         int sampleCount = e.BytesRecorded / 4;
-        var samples = new float[sampleCount];
-        Buffer.BlockCopy(e.Buffer, 0, samples, 0, e.BytesRecorded);
-        DataAvailable?.Invoke(this, samples);
+
+        // Reuse buffer to reduce GC pressure; only reallocate when size changes
+        if (_sampleBuffer == null || _sampleBuffer.Length != sampleCount)
+            _sampleBuffer = new float[sampleCount];
+
+        Buffer.BlockCopy(e.Buffer, 0, _sampleBuffer, 0, e.BytesRecorded);
+        DataAvailable?.Invoke(this, _sampleBuffer);
     }
 
     private void OnRecordingStopped(object? sender, StoppedEventArgs e)
@@ -53,13 +68,19 @@ public class AudioCaptureEngine : IDisposable
 
     public void Stop()
     {
-        _capture?.StopRecording();
+        lock (_captureLock)
+        {
+            _capture?.StopRecording();
+        }
     }
 
     public void Dispose()
     {
-        _capture?.StopRecording();
-        _capture?.Dispose();
-        _capture = null;
+        lock (_captureLock)
+        {
+            _capture?.StopRecording();
+            _capture?.Dispose();
+            _capture = null;
+        }
     }
 }

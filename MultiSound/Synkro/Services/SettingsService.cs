@@ -46,6 +46,8 @@ public class SettingsService
         var dir = Path.GetDirectoryName(_filePath)!;
         Directory.CreateDirectory(dir);
         var json = JsonSerializer.Serialize(settings, JsonOptions);
-        File.WriteAllText(_filePath, json);
+        var tempPath = _filePath + ".tmp";
+        File.WriteAllText(tempPath, json);
+        File.Move(tempPath, _filePath, overwrite: true);
     }
 }

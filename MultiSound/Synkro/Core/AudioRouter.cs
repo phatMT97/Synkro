@@ -8,6 +8,7 @@ public class AudioRouter : IDisposable
     private readonly AudioCaptureEngine _captureEngine;
     private readonly List<AudioOutputChannel> _channels = new();
     private readonly object _lock = new();
+    private volatile AudioOutputChannel[] _channelSnapshot = Array.Empty<AudioOutputChannel>();
 
     public IReadOnlyList<AudioOutputChannel> Channels
     {
@@ -31,6 +32,15 @@ public class AudioRouter : IDisposable
         _captureEngine.DataAvailable += OnCaptureDataAvailable;
     }
 
+    /// <summary>
+    /// Rebuilds the volatile snapshot used by the capture callback (lock-free read path).
+    /// Must be called under _lock.
+    /// </summary>
+    private void UpdateSnapshot()
+    {
+        _channelSnapshot = _channels.ToArray();
+    }
+
     public AudioOutputChannel AddDevice(MMDevice device)
     {
         var channel = new AudioOutputChannel(device);
@@ -40,7 +50,11 @@ public class AudioRouter : IDisposable
             channel.Initialize(_captureEngine.WaveFormat);
         }
 
-        lock (_lock) _channels.Add(channel);
+        lock (_lock)
+        {
+            _channels.Add(channel);
+            UpdateSnapshot();
+        }
         return channel;
     }
 
@@ -54,6 +68,7 @@ public class AudioRouter : IDisposable
                 channel.Stop();
                 channel.Dispose();
                 _channels.Remove(channel);
+                UpdateSnapshot();
             }
         }
     }
@@ -123,25 +138,33 @@ public class AudioRouter : IDisposable
 
     private void OnCaptureDataAvailable(object? sender, float[] samples)
     {
-        // Apply source-level L/R filter before routing to outputs
+        float[] workSamples = samples;
+
+        // Apply source-level L/R filter before routing to outputs.
+        // Channel indices are intentionally swapped: Left=1, Right=0.
+        // WASAPI loopback on this hardware returns channels in reversed order.
         if (CaptureChannelMode != ChannelMode.Stereo && CaptureChannels >= 2)
         {
+            // Copy to avoid mutating the shared capture buffer
+            workSamples = new float[samples.Length];
+            Array.Copy(samples, workSamples, samples.Length);
+
             int srcCh = CaptureChannelMode == ChannelMode.Left ? 1 : 0;
-            for (int i = 0; i < samples.Length; i += CaptureChannels)
+            for (int i = 0; i < workSamples.Length; i += CaptureChannels)
             {
-                float sample = samples[i + srcCh];
+                float sample = workSamples[i + srcCh];
                 for (int ch = 0; ch < CaptureChannels; ch++)
-                    samples[i + ch] = sample;
+                    workSamples[i + ch] = sample;
             }
         }
 
-        List<AudioOutputChannel> snapshot;
-        lock (_lock) { snapshot = _channels.ToList(); }
+        // Read volatile snapshot — no lock needed on the hot path
+        var snapshot = _channelSnapshot;
 
         foreach (var channel in snapshot)
         {
             if (channel.IsEnabled && channel.IsPlaying)
-                channel.WriteSamples(samples, samples.Length);
+                channel.WriteSamples(workSamples, workSamples.Length);
         }
     }
 
@@ -153,6 +176,7 @@ public class AudioRouter : IDisposable
             foreach (var channel in _channels)
                 channel.Dispose();
             _channels.Clear();
+            UpdateSnapshot();
         }
     }
 }

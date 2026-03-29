@@ -13,6 +13,7 @@ public enum ChannelMode
 public class AudioOutputChannel : IDisposable
 {
     private readonly MMDevice _device;
+    private readonly object _writeLock = new();
     private WasapiOut? _output;
     private BufferedWaveProvider? _bufferedProvider;
     private DelayBuffer? _delayBuffer;
@@ -88,76 +89,79 @@ public class AudioOutputChannel : IDisposable
 
     public void Initialize(WaveFormat captureFormat)
     {
-        try
+        lock (_writeLock)
         {
-            ErrorMessage = string.Empty;
-            _waveFormat = captureFormat;
-            _needsResample = false;
-            _inputChannels = captureFormat.Channels;
-            _outputLatencyMs = IsBluetooth ? 100 : 30;
-            _output?.Stop();
-            _output?.Dispose();
-            _output = null;
-
-            // Build candidate formats: capture format first, then device mix format,
-            // then common fallbacks. Stops at the first one that works.
-            var candidates = new List<WaveFormat> { captureFormat };
-
             try
             {
-                var mix = _device.AudioClient.MixFormat;
-                var mixIeee = WaveFormat.CreateIeeeFloatWaveFormat(mix.SampleRate, captureFormat.Channels);
-                if (mix.SampleRate != captureFormat.SampleRate)
-                    candidates.Add(mixIeee);
-            }
-            catch { }
-
-            // Common sample rates as last resort
-            foreach (int rate in new[] { 48000, 44100 })
-            {
-                if (candidates.All(c => c.SampleRate != rate))
-                    candidates.Add(WaveFormat.CreateIeeeFloatWaveFormat(rate, captureFormat.Channels));
-            }
-
-            string? lastError = null;
-            WaveFormat? successFormat = null;
-
-            foreach (var fmt in candidates)
-            {
-                // Try event-driven mode first (lower latency)
-                lastError = TryInitOutput(fmt, useEventSync: true);
-                if (lastError == null) { successFormat = fmt; break; }
-
-                // Try timer-driven mode (more compatible)
-                lastError = TryInitOutput(fmt, useEventSync: false);
-                if (lastError == null) { successFormat = fmt; break; }
-            }
-
-            if (successFormat == null || _output == null)
-            {
-                ErrorMessage = lastError ?? "Cannot initialize output";
+                ErrorMessage = string.Empty;
+                _waveFormat = captureFormat;
+                _needsResample = false;
+                _inputChannels = captureFormat.Channels;
+                _outputLatencyMs = IsBluetooth ? 100 : 30;
+                _output?.Stop();
+                _output?.Dispose();
                 _output = null;
-                return;
-            }
 
-            int outSampleRate = successFormat.SampleRate;
-            if (outSampleRate != captureFormat.SampleRate)
+                // Build candidate formats: capture format first, then device mix format,
+                // then common fallbacks. Stops at the first one that works.
+                var candidates = new List<WaveFormat> { captureFormat };
+
+                try
+                {
+                    var mix = _device.AudioClient.MixFormat;
+                    var mixIeee = WaveFormat.CreateIeeeFloatWaveFormat(mix.SampleRate, captureFormat.Channels);
+                    if (mix.SampleRate != captureFormat.SampleRate)
+                        candidates.Add(mixIeee);
+                }
+                catch { }
+
+                // Common sample rates as last resort
+                foreach (int rate in new[] { 48000, 44100 })
+                {
+                    if (candidates.All(c => c.SampleRate != rate))
+                        candidates.Add(WaveFormat.CreateIeeeFloatWaveFormat(rate, captureFormat.Channels));
+                }
+
+                string? lastError = null;
+                WaveFormat? successFormat = null;
+
+                foreach (var fmt in candidates)
+                {
+                    // Try event-driven mode first (lower latency)
+                    lastError = TryInitOutput(fmt, useEventSync: true);
+                    if (lastError == null) { successFormat = fmt; break; }
+
+                    // Try timer-driven mode (more compatible)
+                    lastError = TryInitOutput(fmt, useEventSync: false);
+                    if (lastError == null) { successFormat = fmt; break; }
+                }
+
+                if (successFormat == null || _output == null)
+                {
+                    ErrorMessage = lastError ?? "Cannot initialize output";
+                    _output = null;
+                    return;
+                }
+
+                int outSampleRate = successFormat.SampleRate;
+                if (outSampleRate != captureFormat.SampleRate)
+                {
+                    _needsResample = true;
+                    _resampleRatio = (float)outSampleRate / captureFormat.SampleRate;
+                }
+
+                _delayBuffer = new DelayBuffer(outSampleRate, captureFormat.Channels, _delayMs);
+
+                int maxSamples = (int)(outSampleRate * captureFormat.Channels * 0.1);
+                _processBuffer = new float[maxSamples];
+                _delayedBuffer = new float[maxSamples];
+                _byteBuffer = new byte[maxSamples * 4];
+            }
+            catch (Exception ex)
             {
-                _needsResample = true;
-                _resampleRatio = (float)outSampleRate / captureFormat.SampleRate;
+                ErrorMessage = ex.Message;
+                _output = null;
             }
-
-            _delayBuffer = new DelayBuffer(outSampleRate, captureFormat.Channels, _delayMs);
-
-            int maxSamples = (int)(outSampleRate * captureFormat.Channels * 0.1);
-            _processBuffer = new float[maxSamples];
-            _delayedBuffer = new float[maxSamples];
-            _byteBuffer = new byte[maxSamples * 4];
-        }
-        catch (Exception ex)
-        {
-            ErrorMessage = ex.Message;
-            _output = null;
         }
     }
 
@@ -198,47 +202,52 @@ public class AudioOutputChannel : IDisposable
 
     public void WriteSamples(float[] samples, int count)
     {
-        if (_bufferedProvider == null || _delayBuffer == null || _waveFormat == null)
-            return;
-
-        float[] workSamples = samples;
-        int workCount = count;
-
-        if (_needsResample)
+        lock (_writeLock)
         {
-            workCount = Resample(samples, count);
-            workSamples = _resampleBuffer!;
-        }
+            if (_bufferedProvider == null || _delayBuffer == null || _waveFormat == null)
+                return;
 
-        if (_processBuffer == null || workCount > _processBuffer.Length)
-        {
-            _processBuffer = new float[workCount];
-            _delayedBuffer = new float[workCount];
-            _byteBuffer = new byte[workCount * 4];
-        }
+            float[] workSamples = samples;
+            int workCount = count;
 
-        VolumeProcessor.Apply(workSamples, _processBuffer, workCount, _volume);
-
-        // L/R channel extraction: copy selected channel to all outputs
-        if (ChannelMode != ChannelMode.Stereo && _inputChannels >= 2)
-        {
-            int srcCh = ChannelMode == ChannelMode.Left ? 1 : 0;
-            for (int i = 0; i < workCount; i += _inputChannels)
+            if (_needsResample)
             {
-                float sample = _processBuffer[i + srcCh];
-                for (int ch = 0; ch < _inputChannels; ch++)
-                    _processBuffer[i + ch] = sample;
+                workCount = Resample(samples, count);
+                workSamples = _resampleBuffer!;
             }
+
+            if (_processBuffer == null || workCount > _processBuffer.Length)
+            {
+                _processBuffer = new float[workCount];
+                _delayedBuffer = new float[workCount];
+                _byteBuffer = new byte[workCount * 4];
+            }
+
+            VolumeProcessor.Apply(workSamples, _processBuffer, workCount, _volume);
+
+            // L/R channel extraction: copy selected channel to all outputs
+            // Channel indices are intentionally swapped: Left=1, Right=0.
+            // WASAPI loopback on this hardware returns channels in reversed order.
+            if (ChannelMode != ChannelMode.Stereo && _inputChannels >= 2)
+            {
+                int srcCh = ChannelMode == ChannelMode.Left ? 1 : 0;
+                for (int i = 0; i < workCount; i += _inputChannels)
+                {
+                    float sample = _processBuffer[i + srcCh];
+                    for (int ch = 0; ch < _inputChannels; ch++)
+                        _processBuffer[i + ch] = sample;
+                }
+            }
+
+            _delayBuffer.Process(_processBuffer, _delayedBuffer!, workCount);
+
+            // Safety clamp — tanh compression keeps signal in range, this is a fallback
+            for (int i = 0; i < workCount; i++)
+                _delayedBuffer![i] = Math.Clamp(_delayedBuffer[i], -1.0f, 1.0f);
+
+            Buffer.BlockCopy(_delayedBuffer!, 0, _byteBuffer!, 0, workCount * 4);
+            _bufferedProvider.AddSamples(_byteBuffer!, 0, workCount * 4);
         }
-
-        _delayBuffer.Process(_processBuffer, _delayedBuffer!, workCount);
-
-        // Safety clamp — tanh compression keeps signal in range, this is a fallback
-        for (int i = 0; i < workCount; i++)
-            _delayedBuffer![i] = Math.Clamp(_delayedBuffer[i], -1.0f, 1.0f);
-
-        Buffer.BlockCopy(_delayedBuffer!, 0, _byteBuffer!, 0, workCount * 4);
-        _bufferedProvider.AddSamples(_byteBuffer!, 0, workCount * 4);
     }
 
     /// <summary>
@@ -283,14 +292,20 @@ public class AudioOutputChannel : IDisposable
 
     public void Stop()
     {
-        _output?.Stop();
+        lock (_writeLock)
+        {
+            _output?.Stop();
+        }
     }
 
     public void Dispose()
     {
-        _output?.Stop();
-        _output?.Dispose();
-        _output = null;
-        _bufferedProvider = null;
+        lock (_writeLock)
+        {
+            _output?.Stop();
+            _output?.Dispose();
+            _output = null;
+            _bufferedProvider = null;
+        }
     }
 }

@@ -149,12 +149,6 @@ public class ChannelViewModel : INotifyPropertyChanged
         _onSettingsChanged();
     }
 
-    public void InitializeAndStart()
-    {
-        // Called by MainViewModel when playback starts
-        // Channel is initialized/started via router.InitializeAll/StartAll
-    }
-
     public void RefreshDelay()
     {
         OnPropertyChanged(nameof(DelayMs));
@@ -356,7 +350,8 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
             using var enumerator = new MMDeviceEnumerator();
             try
             {
-                return enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia).ID;
+                using var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+                return device.ID;
             }
             catch { return ""; }
         }
@@ -420,19 +415,7 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
         }
         else
         {
-            var captureDevice = GetSelectedCaptureMMDevice();
-            _captureEngine.Start(captureDevice);
-            _router.CaptureSourceDeviceId = GetActiveCaptureDeviceId();
-            _router.CaptureChannels = _captureEngine.WaveFormat?.Channels ?? 2;
-            _router.InitializeAll();
-            _router.StartAll();
-            _router.ApplyAutoDelay();
-            IsPlaying = true;
-            Status = "Playing System Audio";
-
-            // Refresh delay display on all slots
-            foreach (var slot in OutputSlots)
-                slot.RefreshDelay();
+            StartPlayback(GetSelectedCaptureMMDevice());
         }
     }
 
@@ -441,8 +424,11 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
         _router.StopAll();
         _captureEngine.Stop();
         IsPlaying = false;
+        StartPlayback(GetSelectedCaptureMMDevice());
+    }
 
-        var captureDevice = GetSelectedCaptureMMDevice();
+    private void StartPlayback(MMDevice? captureDevice)
+    {
         _captureEngine.Start(captureDevice);
         _router.CaptureSourceDeviceId = GetActiveCaptureDeviceId();
         _router.CaptureChannels = _captureEngine.WaveFormat?.Channels ?? 2;
@@ -452,6 +438,7 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
         IsPlaying = true;
         Status = "Playing System Audio";
 
+        // Refresh delay display on all slots
         foreach (var slot in OutputSlots)
             slot.RefreshDelay();
     }
@@ -496,6 +483,11 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
                     _captureEngine.Start();
                     _router.CaptureSourceDeviceId = GetActiveCaptureDeviceId();
                     _router.InitializeAll();
+                    _router.StartAll();
+                    _router.ApplyAutoDelay();
+
+                    foreach (var slot in OutputSlots)
+                        slot.RefreshDelay();
                 }
             });
         }
