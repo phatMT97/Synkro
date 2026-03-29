@@ -3,6 +3,13 @@ using NAudio.Wave;
 
 namespace Synkro.Core;
 
+public enum ChannelMode
+{
+    Stereo = 0,
+    Left = 1,
+    Right = 2
+}
+
 public class AudioOutputChannel : IDisposable
 {
     private readonly MMDevice _device;
@@ -17,10 +24,6 @@ public class AudioOutputChannel : IDisposable
     private float[]? _processBuffer;
     private float[]? _delayedBuffer;
     private byte[]? _byteBuffer;
-
-    private AudioEndpointVolume? _endpointVolume;
-    private float _savedEndpointVolume = -1f;
-    private bool _endpointBoosted;
 
     // Resampling support for format-incompatible devices (e.g. FxSound virtual device)
     private bool _needsResample;
@@ -42,17 +45,15 @@ public class AudioOutputChannel : IDisposable
     public bool IsPlaying => _output?.PlaybackState == PlaybackState.Playing;
     public bool IsEnabled { get; set; } = true;
     public bool IsBluetooth { get; private set; }
+    public ChannelMode ChannelMode { get; set; } = ChannelMode.Stereo;
     public string ErrorMessage { get; private set; } = string.Empty;
     public bool HasError => !string.IsNullOrEmpty(ErrorMessage);
+    public int FineTuneMs { get; set; } = 0;
 
     public float Volume
     {
         get => _volume;
-        set
-        {
-            _volume = Math.Clamp(value, 0.0f, MaxVolume);
-            ApplyEndpointBoost();
-        }
+        set => _volume = Math.Clamp(value, 0.0f, MaxVolume);
     }
 
     public int DelayMs
@@ -69,7 +70,6 @@ public class AudioOutputChannel : IDisposable
     {
         _device = device;
         DetectBluetooth();
-        try { _endpointVolume = _device.AudioEndpointVolume; } catch { }
     }
 
     private void DetectBluetooth()
@@ -218,6 +218,19 @@ public class AudioOutputChannel : IDisposable
         }
 
         VolumeProcessor.Apply(workSamples, _processBuffer, workCount, _volume);
+
+        // L/R channel extraction: copy selected channel to all outputs
+        if (ChannelMode != ChannelMode.Stereo && _inputChannels >= 2)
+        {
+            int srcCh = ChannelMode == ChannelMode.Left ? 1 : 0;
+            for (int i = 0; i < workCount; i += _inputChannels)
+            {
+                float sample = _processBuffer[i + srcCh];
+                for (int ch = 0; ch < _inputChannels; ch++)
+                    _processBuffer[i + ch] = sample;
+            }
+        }
+
         _delayBuffer.Process(_processBuffer, _delayedBuffer!, workCount);
 
         // Safety clamp — tanh compression keeps signal in range, this is a fallback
@@ -271,51 +284,10 @@ public class AudioOutputChannel : IDisposable
     public void Stop()
     {
         _output?.Stop();
-        RestoreEndpointVolume();
-    }
-
-    /// <summary>
-    /// Gradually scale device endpoint volume for boost above 100%.
-    /// At 100%: endpoint stays at original. At 500%: endpoint at max (1.0).
-    /// Linear interpolation between — no sudden jumps.
-    /// </summary>
-    private void ApplyEndpointBoost()
-    {
-        if (_endpointVolume == null) return;
-        try
-        {
-            if (_volume > 1.0f)
-            {
-                if (!_endpointBoosted)
-                {
-                    _savedEndpointVolume = _endpointVolume.MasterVolumeLevelScalar;
-                    _endpointBoosted = true;
-                }
-                // Lerp from saved → 1.0 as volume goes from 1.0 → MaxVolume
-                float t = (_volume - 1.0f) / (MaxVolume - 1.0f);
-                float target = _savedEndpointVolume + (1.0f - _savedEndpointVolume) * t;
-                _endpointVolume.MasterVolumeLevelScalar = target;
-            }
-            else if (_endpointBoosted)
-            {
-                if (_savedEndpointVolume >= 0f)
-                    _endpointVolume.MasterVolumeLevelScalar = _savedEndpointVolume;
-                _endpointBoosted = false;
-            }
-        }
-        catch { }
-    }
-
-    private void RestoreEndpointVolume()
-    {
-        if (!_endpointBoosted || _endpointVolume == null || _savedEndpointVolume < 0f) return;
-        try { _endpointVolume.MasterVolumeLevelScalar = _savedEndpointVolume; } catch { }
-        _endpointBoosted = false;
     }
 
     public void Dispose()
     {
-        RestoreEndpointVolume();
         _output?.Stop();
         _output?.Dispose();
         _output = null;

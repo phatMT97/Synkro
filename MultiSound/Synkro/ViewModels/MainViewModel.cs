@@ -11,65 +11,168 @@ namespace Synkro.ViewModels;
 
 public class ChannelViewModel : INotifyPropertyChanged
 {
-    private readonly AudioOutputChannel _channel;
+    private AudioOutputChannel? _channel;
+    private readonly AudioRouter _router;
+    private readonly DeviceMonitorService _deviceMonitor;
     private readonly Action _onSettingsChanged;
-    private readonly Action _onUserVolumeChanged;
-    private bool _isEnabled;
+    private string _selectedDeviceId = string.Empty;
+    private int _fineTuneMs;
 
-    /// <summary>User-configured base volume. System volume scaling is applied on top of this.</summary>
-    public float BaseVolume { get; set; } = 1.0f;
+    public ObservableCollection<DeviceInfo> AvailableDevices { get; }
 
-    public string DeviceId => _channel.DeviceId;
-    public string Name => _channel.IsBluetooth
-        ? $"{_channel.FriendlyName} [BT]"
-        : _channel.FriendlyName;
-    public bool IsCaptureSource { get; set; }
-    public bool IsBluetooth => _channel.IsBluetooth;
-    public string ErrorMessage => _channel.ErrorMessage;
-    public string DeviceType => _channel.IsBluetooth ? "Bluetooth ~180ms" : "Wired ~10ms";
-
-    public bool IsEnabled
+    public string SelectedDeviceId
     {
-        get => _isEnabled;
+        get => _selectedDeviceId;
         set
         {
-            _isEnabled = value;
-            _channel.IsEnabled = value;
+            if (_selectedDeviceId == value) return;
+            var oldId = _selectedDeviceId;
+            _selectedDeviceId = value;
             OnPropertyChanged();
-            _onSettingsChanged();
+            OnDeviceChanged(oldId);
         }
     }
+
+    public string DeviceId => _channel?.DeviceId ?? string.Empty;
+    public string Name => _channel != null
+        ? (_channel.IsBluetooth ? $"{_channel.FriendlyName} [BT]" : _channel.FriendlyName)
+        : string.Empty;
+    public bool IsBluetooth => _channel?.IsBluetooth ?? false;
+    public string ErrorMessage => _channel?.ErrorMessage ?? string.Empty;
 
     public float Volume
     {
-        get => _channel.Volume;
+        get => _channel?.Volume ?? 1.0f;
         set
         {
+            if (_channel == null) return;
             _channel.Volume = value;
-            BaseVolume = value; // user manually set → update base
             OnPropertyChanged();
             _onSettingsChanged();
-            _onUserVolumeChanged();
         }
     }
 
-    /// <summary>Set volume from system sync without updating BaseVolume.</summary>
-    public void SetSyncedVolume(float vol)
+    public int FineTuneMs
     {
-        _channel.Volume = vol;
-        OnPropertyChanged(nameof(Volume));
+        get => _fineTuneMs;
+        set
+        {
+            _fineTuneMs = value;
+            if (_channel != null)
+            {
+                _channel.FineTuneMs = value;
+                _router.ApplyAutoDelay();
+            }
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(DelayMs));
+            _onSettingsChanged();
+        }
     }
 
-    public int DelayMs => _channel.DelayMs;
+    public int DelayMs => _channel?.DelayMs ?? 0;
 
-    public ChannelViewModel(AudioOutputChannel channel, Action onSettingsChanged,
-                            Action onUserVolumeChanged, bool enabled = true)
+    public ChannelMode ChannelMode
+    {
+        get => _channel?.ChannelMode ?? ChannelMode.Stereo;
+        set
+        {
+            if (_channel == null) return;
+            _channel.ChannelMode = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(IsStereo));
+            OnPropertyChanged(nameof(IsLeft));
+            OnPropertyChanged(nameof(IsRight));
+            _onSettingsChanged();
+        }
+    }
+
+    public bool IsStereo
+    {
+        get => ChannelMode == ChannelMode.Stereo;
+        set { if (value) ChannelMode = ChannelMode.Stereo; }
+    }
+
+    public bool IsLeft
+    {
+        get => ChannelMode == ChannelMode.Left;
+        set { if (value) ChannelMode = ChannelMode.Left; }
+    }
+
+    public bool IsRight
+    {
+        get => ChannelMode == ChannelMode.Right;
+        set { if (value) ChannelMode = ChannelMode.Right; }
+    }
+
+    public ChannelViewModel(AudioRouter router, DeviceMonitorService deviceMonitor,
+        ObservableCollection<DeviceInfo> availableDevices, Action onSettingsChanged)
+    {
+        _router = router;
+        _deviceMonitor = deviceMonitor;
+        AvailableDevices = availableDevices;
+        _onSettingsChanged = onSettingsChanged;
+    }
+
+    /// <summary>
+    /// Attach to an existing router channel (used during load).
+    /// </summary>
+    public void AttachChannel(AudioOutputChannel channel)
     {
         _channel = channel;
-        _onSettingsChanged = onSettingsChanged;
-        _onUserVolumeChanged = onUserVolumeChanged;
-        _isEnabled = enabled;
-        _channel.IsEnabled = enabled;
+        _selectedDeviceId = channel.DeviceId;
+        _fineTuneMs = channel.FineTuneMs;
+        NotifyAllProperties();
+    }
+
+    private void OnDeviceChanged(string oldDeviceId)
+    {
+        if (!string.IsNullOrEmpty(oldDeviceId))
+        {
+            _channel?.Stop();
+            _router.RemoveDevice(oldDeviceId);
+            _channel = null;
+        }
+
+        if (string.IsNullOrEmpty(_selectedDeviceId)) return;
+
+        var mmDevice = _deviceMonitor.GetDeviceById(_selectedDeviceId);
+        if (mmDevice == null) return;
+
+        var channel = _router.AddDevice(mmDevice);
+        channel.Volume = Volume;
+        channel.FineTuneMs = _fineTuneMs;
+        channel.ChannelMode = ChannelMode;
+        channel.IsEnabled = true;
+        _channel = channel;
+
+        NotifyAllProperties();
+        _onSettingsChanged();
+    }
+
+    public void InitializeAndStart()
+    {
+        // Called by MainViewModel when playback starts
+        // Channel is initialized/started via router.InitializeAll/StartAll
+    }
+
+    public void RefreshDelay()
+    {
+        OnPropertyChanged(nameof(DelayMs));
+    }
+
+    private void NotifyAllProperties()
+    {
+        OnPropertyChanged(nameof(DeviceId));
+        OnPropertyChanged(nameof(Name));
+        OnPropertyChanged(nameof(IsBluetooth));
+        OnPropertyChanged(nameof(ErrorMessage));
+        OnPropertyChanged(nameof(Volume));
+        OnPropertyChanged(nameof(DelayMs));
+        OnPropertyChanged(nameof(FineTuneMs));
+        OnPropertyChanged(nameof(ChannelMode));
+        OnPropertyChanged(nameof(IsStereo));
+        OnPropertyChanged(nameof(IsLeft));
+        OnPropertyChanged(nameof(IsRight));
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -111,17 +214,13 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
     private readonly AudioRouter _router;
     private readonly DeviceMonitorService _deviceMonitor;
     private readonly SettingsService _settingsService;
-    private readonly VolumeSyncService _volumeSync;
-    private float _pendingScale;
-    private System.Threading.Timer? _syncDebounce;
     private AppSettings _settings;
     private bool _isPlaying;
-    private bool _volumeSyncEnabled = false;
-    private int _globalFineTuneMs;
     private string _status = "Stopped";
     private CaptureDeviceItem? _selectedCaptureDevice;
 
-    public ObservableCollection<ChannelViewModel> Channels { get; } = new();
+    public ObservableCollection<ChannelViewModel> OutputSlots { get; } = new();
+    public ObservableCollection<DeviceInfo> AvailableDevices { get; } = new();
     public ObservableCollection<CaptureDeviceItem> CaptureDevices { get; } = new();
 
     public bool IsPlaying
@@ -157,43 +256,11 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
 
             if (IsPlaying)
                 RestartWithNewCaptureDevice();
-            else
-                RefreshCaptureSource();
-        }
-    }
-
-    public int GlobalFineTuneMs
-    {
-        get => _globalFineTuneMs;
-        set
-        {
-            _globalFineTuneMs = value;
-            _router.GlobalFineTuneMs = value;
-            _router.ApplyAutoDelay();
-            _settings.GlobalFineTuneOffsetMs = value;
-            _settingsService.Save(_settings);
-            OnPropertyChanged();
-        }
-    }
-
-    public bool VolumeSyncEnabled
-    {
-        get => _volumeSyncEnabled;
-        set
-        {
-            _volumeSyncEnabled = value;
-            if (value)
-            {
-                // Capture current state as reference point
-                _volumeSync.MarkReferenceVolume();
-                foreach (var ch in Channels)
-                    ch.BaseVolume = ch.Volume;
-            }
-            OnPropertyChanged();
         }
     }
 
     public ICommand StartStopCommand { get; }
+    public ICommand AddDeviceCommand { get; }
 
     public MainViewModel()
     {
@@ -202,20 +269,17 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
         _captureEngine = new AudioCaptureEngine();
         _router = new AudioRouter(_captureEngine);
         _deviceMonitor = new DeviceMonitorService();
-        _volumeSync = new VolumeSyncService();
-        _globalFineTuneMs = _settings.GlobalFineTuneOffsetMs;
-        _router.GlobalFineTuneMs = _globalFineTuneMs;
 
         StartStopCommand = new RelayCommand(TogglePlayback);
+        AddDeviceCommand = new RelayCommand(AddDevice);
 
         _deviceMonitor.DeviceRemoved += OnDeviceRemoved;
         _deviceMonitor.DeviceAdded += OnDeviceAdded;
         _deviceMonitor.DefaultDeviceChanged += OnDefaultDeviceChanged;
-        _volumeSync.VolumeScaleChanged += OnSystemVolumeChanged;
-        _volumeSync.Start();
 
         LoadCaptureDevices();
-        LoadDevices();
+        RefreshAvailableDevices();
+        LoadOutputSlots();
     }
 
     private void LoadCaptureDevices()
@@ -223,16 +287,6 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
         CaptureDevices.Clear();
 
         using var enumerator = new MMDeviceEnumerator();
-        string defaultId;
-        try
-        {
-            var defaultDev = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-            defaultId = defaultDev.ID;
-        }
-        catch
-        {
-            defaultId = "";
-        }
 
         // "Auto" option uses the system default
         CaptureDevices.Add(new CaptureDeviceItem
@@ -264,6 +318,37 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
+    private void RefreshAvailableDevices()
+    {
+        AvailableDevices.Clear();
+        var devices = _deviceMonitor.GetOutputDevices();
+        foreach (var d in devices)
+            AvailableDevices.Add(d);
+    }
+
+    private void LoadOutputSlots()
+    {
+        foreach (var slotSettings in _settings.OutputSlots)
+        {
+            // Verify the device still exists
+            if (!AvailableDevices.Any(d => d.Id == slotSettings.DeviceId))
+                continue;
+
+            var mmDevice = _deviceMonitor.GetDeviceById(slotSettings.DeviceId);
+            if (mmDevice == null) continue;
+
+            var channel = _router.AddDevice(mmDevice);
+            channel.Volume = slotSettings.Volume;
+            channel.FineTuneMs = slotSettings.FineTuneMs;
+            channel.ChannelMode = (ChannelMode)slotSettings.ChannelMode;
+            channel.IsEnabled = true;
+
+            var vm = new ChannelViewModel(_router, _deviceMonitor, AvailableDevices, SaveSettings);
+            vm.AttachChannel(channel);
+            OutputSlots.Add(vm);
+        }
+    }
+
     private string GetActiveCaptureDeviceId()
     {
         if (_selectedCaptureDevice == null || _selectedCaptureDevice.IsDefault)
@@ -285,97 +370,43 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
         return _deviceMonitor.GetDeviceById(_selectedCaptureDevice.Id);
     }
 
-    private void OnUserVolumeChanged()
+    public void AddDevice()
     {
-        // User manually changed a channel volume → update reference point
-        _volumeSync.MarkReferenceVolume();
-    }
+        // Pick the first available device that's not already used
+        var usedIds = OutputSlots.Select(s => s.DeviceId).ToHashSet();
+        var firstAvailable = AvailableDevices.FirstOrDefault(d => !usedIds.Contains(d.Id));
 
-    private void OnSystemVolumeChanged(object? sender, float scale)
-    {
-        if (!_volumeSyncEnabled) return;
+        if (firstAvailable == null && AvailableDevices.Count > 0)
+            firstAvailable = AvailableDevices[0]; // allow duplicates if all are used
 
-        // Debounce rapid volume changes (e.g. slider drag) to avoid dispatcher starvation
-        _pendingScale = scale;
-        _syncDebounce?.Dispose();
-        _syncDebounce = new System.Threading.Timer(_ =>
+        if (firstAvailable == null) return;
+
+        var mmDevice = _deviceMonitor.GetDeviceById(firstAvailable.Id);
+        if (mmDevice == null) return;
+
+        var channel = _router.AddDevice(mmDevice);
+        channel.IsEnabled = true;
+
+        if (IsPlaying && _captureEngine.WaveFormat != null)
         {
-            System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
-            {
-                foreach (var ch in Channels)
-                {
-                    if (ch.IsEnabled && !ch.IsCaptureSource && !ch.IsBluetooth)
-                    {
-                        float newVol = Math.Clamp(ch.BaseVolume * _pendingScale, 0f, AudioOutputChannel.MaxVolume);
-                        ch.SetSyncedVolume(newVol);
-                    }
-                }
-            });
-        }, null, 75, Timeout.Infinite);
-    }
-
-    private void LoadDevices()
-    {
-        var captureDeviceId = GetActiveCaptureDeviceId();
-        _router.CaptureSourceDeviceId = captureDeviceId;
-        var devices = _deviceMonitor.GetOutputDevices();
-
-        foreach (var deviceInfo in devices)
-        {
-            var mmDevice = _deviceMonitor.GetDeviceById(deviceInfo.Id);
-            if (mmDevice == null) continue;
-
-            var channel = _router.AddDevice(mmDevice);
-            bool isCaptureSource = deviceInfo.Id == captureDeviceId;
-
-            // Apply saved settings, but always disable capture source to prevent echo
-            bool enabled;
-            if (_settings.Devices.TryGetValue(deviceInfo.Id, out var saved))
-            {
-                channel.Volume = saved.Volume;
-                channel.DelayMs = saved.DelayOffsetMs;
-                // Override saved setting: capture source must be disabled
-                enabled = isCaptureSource ? false : saved.Enabled;
-            }
-            else
-            {
-                enabled = !isCaptureSource;
-            }
-
-            var vm = new ChannelViewModel(channel, SaveSettings, OnUserVolumeChanged, enabled)
-            {
-                IsCaptureSource = isCaptureSource,
-                BaseVolume = channel.Volume
-            };
-            Channels.Add(vm);
+            channel.Initialize(_captureEngine.WaveFormat);
+            channel.Start();
+            _router.ApplyAutoDelay();
         }
+
+        var vm = new ChannelViewModel(_router, _deviceMonitor, AvailableDevices, SaveSettings);
+        vm.AttachChannel(channel);
+        OutputSlots.Add(vm);
+        SaveSettings();
     }
 
-    /// <summary>Update which channel is marked as capture source without reloading.</summary>
-    private void RefreshCaptureSource()
+    public void RemoveDevice(ChannelViewModel slot)
     {
-        var captureId = GetActiveCaptureDeviceId();
-        _router.CaptureSourceDeviceId = captureId;
-        foreach (var ch in Channels)
-        {
-            ch.IsCaptureSource = ch.DeviceId == captureId;
-        }
-    }
-
-    private void RestartWithNewCaptureDevice()
-    {
-        // Full restart: stop → reload capture source → start
-        _router.StopAll();
-        _captureEngine.Stop();
-        IsPlaying = false;
-
-        RefreshCaptureSource();
-
-        _captureEngine.Start(GetSelectedCaptureMMDevice());
-        _router.InitializeAll();
-        _router.StartAll();
-        IsPlaying = true;
-        Status = "Playing System Audio";
+        var deviceId = slot.DeviceId;
+        OutputSlots.Remove(slot);
+        if (!string.IsNullOrEmpty(deviceId))
+            _router.RemoveDevice(deviceId);
+        SaveSettings();
     }
 
     private void TogglePlayback()
@@ -389,21 +420,57 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
         }
         else
         {
-            _captureEngine.Start(GetSelectedCaptureMMDevice());
+            var captureDevice = GetSelectedCaptureMMDevice();
+            _captureEngine.Start(captureDevice);
+            _router.CaptureSourceDeviceId = GetActiveCaptureDeviceId();
+            _router.CaptureChannels = _captureEngine.WaveFormat?.Channels ?? 2;
             _router.InitializeAll();
             _router.StartAll();
+            _router.ApplyAutoDelay();
             IsPlaying = true;
             Status = "Playing System Audio";
+
+            // Refresh delay display on all slots
+            foreach (var slot in OutputSlots)
+                slot.RefreshDelay();
         }
+    }
+
+    private void RestartWithNewCaptureDevice()
+    {
+        _router.StopAll();
+        _captureEngine.Stop();
+        IsPlaying = false;
+
+        var captureDevice = GetSelectedCaptureMMDevice();
+        _captureEngine.Start(captureDevice);
+        _router.CaptureSourceDeviceId = GetActiveCaptureDeviceId();
+        _router.CaptureChannels = _captureEngine.WaveFormat?.Channels ?? 2;
+        _router.InitializeAll();
+        _router.StartAll();
+        _router.ApplyAutoDelay();
+        IsPlaying = true;
+        Status = "Playing System Audio";
+
+        foreach (var slot in OutputSlots)
+            slot.RefreshDelay();
     }
 
     private void OnDeviceRemoved(object? sender, string deviceId)
     {
         System.Windows.Application.Current?.Dispatcher.Invoke(() =>
         {
-            var vm = Channels.FirstOrDefault(c => c.DeviceId == deviceId);
-            if (vm != null) Channels.Remove(vm);
-            _router.RemoveDevice(deviceId);
+            // Remove from available devices
+            var dev = AvailableDevices.FirstOrDefault(d => d.Id == deviceId);
+            if (dev != null) AvailableDevices.Remove(dev);
+
+            // Remove any output slots using this device
+            var slotsToRemove = OutputSlots.Where(s => s.DeviceId == deviceId).ToList();
+            foreach (var slot in slotsToRemove)
+            {
+                OutputSlots.Remove(slot);
+                _router.RemoveDevice(deviceId);
+            }
         });
     }
 
@@ -411,24 +478,8 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         System.Windows.Application.Current?.Dispatcher.Invoke(() =>
         {
-            var mmDevice = _deviceMonitor.GetDeviceById(deviceInfo.Id);
-            if (mmDevice == null) return;
-
-            var channel = _router.AddDevice(mmDevice);
-
-            if (_settings.Devices.TryGetValue(deviceInfo.Id, out var saved))
-            {
-                channel.Volume = saved.Volume;
-                channel.DelayMs = saved.DelayOffsetMs;
-            }
-
-            if (IsPlaying && _captureEngine.WaveFormat != null)
-            {
-                channel.Initialize(_captureEngine.WaveFormat);
-                channel.Start();
-            }
-
-            Channels.Add(new ChannelViewModel(channel, SaveSettings, OnUserVolumeChanged));
+            if (!AvailableDevices.Any(d => d.Id == deviceInfo.Id))
+                AvailableDevices.Add(deviceInfo);
         });
     }
 
@@ -443,8 +494,8 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
                 {
                     _captureEngine.Stop();
                     _captureEngine.Start();
+                    _router.CaptureSourceDeviceId = GetActiveCaptureDeviceId();
                     _router.InitializeAll();
-                    RefreshCaptureSource();
                 }
             });
         }
@@ -452,16 +503,17 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private void SaveSettings()
     {
-        _settings.Devices.Clear();
-        foreach (var ch in Channels)
+        _settings.OutputSlots.Clear();
+        foreach (var slot in OutputSlots)
         {
-            _settings.Devices[ch.DeviceId] = new DeviceSettings
+            if (string.IsNullOrEmpty(slot.DeviceId)) continue;
+            _settings.OutputSlots.Add(new OutputSlotSettings
             {
-                FriendlyName = ch.Name,
-                Enabled = ch.IsEnabled,
-                Volume = ch.Volume,
-                DelayOffsetMs = ch.DelayMs
-            };
+                DeviceId = slot.DeviceId,
+                Volume = slot.Volume,
+                FineTuneMs = slot.FineTuneMs,
+                ChannelMode = (int)slot.ChannelMode
+            });
         }
         _settingsService.Save(_settings);
     }
@@ -473,8 +525,6 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
     public void Dispose()
     {
         SaveSettings();
-        _syncDebounce?.Dispose();
-        _volumeSync.Dispose();
         _router.Dispose();
         _captureEngine.Dispose();
         _deviceMonitor.Dispose();

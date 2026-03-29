@@ -40,14 +40,20 @@ public partial class MainWindow : Window
 
     private void FineTuneDown_Click(object sender, RoutedEventArgs e)
     {
-        if (DataContext is MainViewModel vm)
-            vm.GlobalFineTuneMs = Math.Max(-300, vm.GlobalFineTuneMs - 5);
+        if (((Button)sender).Tag is ChannelViewModel vm)
+            vm.FineTuneMs = Math.Max(-300, vm.FineTuneMs - 5);
     }
 
     private void FineTuneUp_Click(object sender, RoutedEventArgs e)
     {
-        if (DataContext is MainViewModel vm)
-            vm.GlobalFineTuneMs = Math.Min(300, vm.GlobalFineTuneMs + 5);
+        if (((Button)sender).Tag is ChannelViewModel vm)
+            vm.FineTuneMs = Math.Min(300, vm.FineTuneMs + 5);
+    }
+
+    private void RemoveDevice_Click(object sender, RoutedEventArgs e)
+    {
+        if (((Button)sender).Tag is ChannelViewModel slot && DataContext is MainViewModel vm)
+            vm.RemoveDevice(slot);
     }
 }
 

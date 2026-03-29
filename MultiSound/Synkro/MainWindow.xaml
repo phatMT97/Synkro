@@ -168,10 +168,40 @@
                 </Setter.Value>
             </Setter>
         </Style>
-        <!-- Hidden scrollbar — scroll with mouse wheel only -->
+        <!-- Hidden scrollbar - scroll with mouse wheel only -->
         <Style TargetType="ScrollViewer">
             <Setter Property="VerticalScrollBarVisibility" Value="Hidden"/>
             <Setter Property="HorizontalScrollBarVisibility" Value="Disabled"/>
+        </Style>
+
+        <!-- Channel mode toggle (S/L/R) -->
+        <Style x:Key="ChannelToggle" TargetType="RadioButton">
+            <Setter Property="Foreground" Value="{StaticResource SubtextBrush}"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Border x:Name="bd" Width="22" Height="20"
+                                CornerRadius="4"
+                                Background="{StaticResource BgBrush}"
+                                BorderBrush="{StaticResource BorderBrush}"
+                                BorderThickness="1">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="bd" Property="Background" Value="{StaticResource AccentBrush}"/>
+                                <Setter TargetName="bd" Property="BorderBrush" Value="{StaticResource AccentBrush}"/>
+                                <Setter Property="Foreground" Value="White"/>
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="bd" Property="BorderBrush" Value="{StaticResource AccentHoverBrush}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
 
         <!-- Dark ComboBox -->
@@ -288,6 +318,33 @@
                 </Setter.Value>
             </Setter>
         </Style>
+
+        <!-- Remove slot button -->
+        <Style x:Key="RemoveSlotBtn" TargetType="Button">
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Width" Value="22"/>
+            <Setter Property="Height" Value="22"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="bd" Background="Transparent" CornerRadius="4">
+                            <TextBlock Text="&#x2715;" FontSize="10"
+                                       Foreground="{StaticResource SubtextBrush}"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="bd" Property="Background" Value="#40EF4444"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="bd" Property="Background" Value="#80EF4444"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Window.Resources>
 
     <!-- Main container (sharp edges, no transparency artifacts) -->
@@ -331,7 +388,7 @@
                     <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
-                <!-- Capture source selector -->
+                <!-- Row 0: Source selector -->
                 <Border Grid.Row="0" Background="{StaticResource SurfaceBrush}"
                         CornerRadius="8" Padding="12,8" Margin="0,0,0,10">
                     <DockPanel>
@@ -345,49 +402,41 @@
                     </DockPanel>
                 </Border>
 
-                <!-- Device list -->
+                <!-- Row 1: Output device list -->
                 <ScrollViewer Grid.Row="1"
                               VerticalScrollBarVisibility="Hidden"
                               HorizontalScrollBarVisibility="Disabled">
-                    <ItemsControl ItemsSource="{Binding Channels}">
+                    <ItemsControl ItemsSource="{Binding OutputSlots}">
                         <ItemsControl.ItemTemplate>
                             <DataTemplate>
                                 <Border Background="{StaticResource SurfaceBrush}"
                                         CornerRadius="8"
-                                        Padding="14,12"
-                                        Margin="0,0,0,10">
+                                        Padding="14,10"
+                                        Margin="0,0,0,8">
                                     <StackPanel>
-                                        <!-- Header: checkbox + name -->
+                                        <!-- Device selector + remove button -->
                                         <DockPanel>
-                                            <CheckBox DockPanel.Dock="Left"
-                                                      IsChecked="{Binding IsEnabled}"
-                                                      Style="{StaticResource ModernCheck}"
-                                                      VerticalAlignment="Center"/>
-                                            <StackPanel Margin="8,0,0,0">
-                                                <TextBlock Text="{Binding Name}"
-                                                           Foreground="{StaticResource TextBrush}"
-                                                           FontWeight="SemiBold" FontSize="12"
-                                                           TextTrimming="CharacterEllipsis"/>
-                                                <TextBlock Text="{Binding DeviceType}"
-                                                           Foreground="{StaticResource SubtextBrush}"
-                                                           FontSize="10"/>
-                                            </StackPanel>
+                                            <Button DockPanel.Dock="Right"
+                                                    Style="{StaticResource RemoveSlotBtn}"
+                                                    Click="RemoveDevice_Click"
+                                                    Tag="{Binding}"
+                                                    Margin="6,0,0,0"/>
+                                            <ComboBox ItemsSource="{Binding AvailableDevices}"
+                                                      DisplayMemberPath="FriendlyName"
+                                                      SelectedValuePath="Id"
+                                                      SelectedValue="{Binding SelectedDeviceId}"
+                                                      Style="{StaticResource DarkCombo}"/>
                                         </DockPanel>
 
-                                        <!-- Warnings -->
-                                        <TextBlock Text="Capture source — may cause echo if enabled"
-                                                   Foreground="{StaticResource WarningBrush}"
-                                                   FontSize="10" Margin="26,4,0,0"
-                                                   Visibility="{Binding IsCaptureSource, Converter={StaticResource BoolToVis}}"/>
+                                        <!-- Error message -->
                                         <TextBlock Text="{Binding ErrorMessage}"
                                                    Foreground="{StaticResource ErrorBrush}"
-                                                   FontSize="10" Margin="26,2,0,0"
+                                                   FontSize="10" Margin="0,4,0,0"
                                                    TextWrapping="Wrap"
                                                    Visibility="{Binding ErrorMessage, Converter={StaticResource StringToVis}}"/>
 
                                         <!-- Volume control -->
-                                        <DockPanel Margin="0,8,0,0"
-                                                   IsEnabled="{Binding IsEnabled}">
+                                        <DockPanel Margin="0,8,0,0">
                                             <TextBlock Text="Vol"
                                                        Foreground="{StaticResource SubtextBrush}"
                                                        FontSize="10" Width="24"
@@ -407,7 +456,6 @@
                                                     Click="VolUp_Click" Tag="{Binding}"
                                                     DockPanel.Dock="Right" Margin="4,0,4,0"
                                                     FontSize="14" FontWeight="Bold"/>
-                                            <!-- Maximum must match AudioOutputChannel.MaxVolume -->
                                             <Slider Minimum="0" Maximum="5"
                                                     Value="{Binding Volume}"
                                                     Style="{StaticResource ModernSlider}"
@@ -417,10 +465,47 @@
                                                     Margin="4,0"/>
                                         </DockPanel>
 
-                                        <!-- Delay info -->
+                                        <!-- Channel mode + Fine-tune + Delay -->
+                                        <DockPanel Margin="0,6,0,0">
+                                            <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
+                                                <RadioButton Content="S" GroupName="{Binding DeviceId}"
+                                                             IsChecked="{Binding IsStereo}"
+                                                             Style="{StaticResource ChannelToggle}"/>
+                                                <RadioButton Content="L" GroupName="{Binding DeviceId}"
+                                                             IsChecked="{Binding IsLeft}"
+                                                             Style="{StaticResource ChannelToggle}"
+                                                             Margin="3,0,0,0"/>
+                                                <RadioButton Content="R" GroupName="{Binding DeviceId}"
+                                                             IsChecked="{Binding IsRight}"
+                                                             Style="{StaticResource ChannelToggle}"
+                                                             Margin="3,0,0,0"/>
+                                            </StackPanel>
+                                            <StackPanel Orientation="Horizontal" DockPanel.Dock="Right"
+                                                        VerticalAlignment="Center">
+                                                <TextBlock Text="Tune"
+                                                           Foreground="{StaticResource SubtextBrush}"
+                                                           FontSize="10" VerticalAlignment="Center"
+                                                           Margin="8,0,4,0"/>
+                                                <Button Content="-5" Width="26" Height="20"
+                                                        Style="{StaticResource RoundBtn}"
+                                                        Click="FineTuneDown_Click" Tag="{Binding}"
+                                                        FontSize="9"/>
+                                                <TextBlock Text="{Binding FineTuneMs, StringFormat='{}{0}ms'}"
+                                                           Foreground="{StaticResource AccentBrush}"
+                                                           FontSize="10" FontWeight="SemiBold"
+                                                           Width="36" TextAlignment="Center"
+                                                           VerticalAlignment="Center"/>
+                                                <Button Content="+5" Width="26" Height="20"
+                                                        Style="{StaticResource RoundBtn}"
+                                                        Click="FineTuneUp_Click" Tag="{Binding}"
+                                                        FontSize="9"/>
+                                            </StackPanel>
+                                        </DockPanel>
+
+                                        <!-- Delay display -->
                                         <TextBlock Foreground="{StaticResource SubtextBrush}"
-                                                   FontSize="10" Margin="24,4,0,0">
-                                            <Run Text="Delay: "/>
+                                                   FontSize="10" Margin="0,4,0,0">
+                                            <Run Text="delay "/>
                                             <Run Text="{Binding DelayMs, Mode=OneWay}"/>
                                             <Run Text="ms"/>
                                         </TextBlock>
@@ -431,52 +516,15 @@
                     </ItemsControl>
                 </ScrollViewer>
 
-                <!-- Fine-tune section -->
-                <Border Grid.Row="2" Background="{StaticResource SurfaceBrush}"
-                        CornerRadius="8" Padding="14,12" Margin="0,4,0,14">
-                    <StackPanel>
-                        <TextBlock Text="Sync Fine-tune"
-                                   Foreground="{StaticResource TextBrush}"
-                                   FontWeight="SemiBold" FontSize="12"
-                                   Margin="0,0,0,8"/>
-                        <DockPanel>
-                            <Button Content="-5" Width="32" Height="26"
-                                    Style="{StaticResource RoundBtn}"
-                                    Click="FineTuneDown_Click"
-                                    DockPanel.Dock="Left" Margin="0,0,6,0"
-                                    FontSize="11"/>
-                            <Button Content="+5" Width="32" Height="26"
-                                    Style="{StaticResource RoundBtn}"
-                                    Click="FineTuneUp_Click"
-                                    DockPanel.Dock="Right" Margin="6,0,0,0"
-                                    FontSize="11"/>
-                            <TextBlock DockPanel.Dock="Right"
-                                       Text="{Binding GlobalFineTuneMs, StringFormat='{}{0}ms'}"
-                                       Foreground="{StaticResource AccentBrush}"
-                                       FontWeight="SemiBold"
-                                       Width="50" TextAlignment="Right"
-                                       VerticalAlignment="Center" FontSize="12"
-                                       Margin="0,0,6,0"/>
-                            <Slider Minimum="-300" Maximum="300"
-                                    Value="{Binding GlobalFineTuneMs}"
-                                    Style="{StaticResource ModernSlider}"
-                                    TickFrequency="5"
-                                    IsSnapToTickEnabled="True"
-                                    VerticalAlignment="Center"
-                                    Margin="4,0"/>
-                        </DockPanel>
-                        <!-- Volume sync toggle -->
-                        <CheckBox Style="{StaticResource ModernCheck}"
-                                  IsChecked="{Binding VolumeSyncEnabled}"
-                                  Margin="0,10,0,0">
-                            <TextBlock Text="Sync volume with system"
-                                       Foreground="{StaticResource SubtextBrush}"
-                                       FontSize="11"/>
-                        </CheckBox>
-                    </StackPanel>
-                </Border>
+                <!-- Row 2: Add Device button -->
+                <Button Grid.Row="2"
+                        Content="+ Add Output Device"
+                        Command="{Binding AddDeviceCommand}"
+                        Style="{StaticResource RoundBtn}"
+                        Height="32" FontSize="12"
+                        Margin="0,4,0,10"/>
 
-                <!-- Start/Stop button -->
+                <!-- Row 3: Start/Stop button -->
                 <Button Grid.Row="3"
                         Content="{Binding StartStopText}"
                         Command="{Binding StartStopCommand}"

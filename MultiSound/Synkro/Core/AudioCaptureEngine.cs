@@ -13,9 +13,6 @@ public class AudioCaptureEngine : IDisposable
     public event EventHandler? CaptureStarted;
     public event EventHandler? CaptureStopped;
 
-    /// <summary>
-    /// Start capturing from a specific device, or the default render device if null.
-    /// </summary>
     public void Start(MMDevice? device = null)
     {
         _capture?.StopRecording();
@@ -43,12 +40,9 @@ public class AudioCaptureEngine : IDisposable
     private void OnDataAvailable(object? sender, WaveInEventArgs e)
     {
         if (e.BytesRecorded == 0) return;
-
-        // Convert byte[] to float[] (WASAPI Loopback is 32-bit IEEE float)
         int sampleCount = e.BytesRecorded / 4;
         var samples = new float[sampleCount];
         Buffer.BlockCopy(e.Buffer, 0, samples, 0, e.BytesRecorded);
-
         DataAvailable?.Invoke(this, samples);
     }
 

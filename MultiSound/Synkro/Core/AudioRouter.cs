@@ -8,17 +8,10 @@ public class AudioRouter : IDisposable
     private readonly AudioCaptureEngine _captureEngine;
     private readonly List<AudioOutputChannel> _channels = new();
     private readonly object _lock = new();
-    private int _globalFineTuneMs;
 
     public IReadOnlyList<AudioOutputChannel> Channels
     {
         get { lock (_lock) return _channels.ToList(); }
-    }
-
-    public int GlobalFineTuneMs
-    {
-        get => _globalFineTuneMs;
-        set => _globalFineTuneMs = value;
     }
 
     /// <summary>
@@ -27,6 +20,10 @@ public class AudioRouter : IDisposable
     /// delay to stay in sync with the native playback on the capture source.
     /// </summary>
     public string? CaptureSourceDeviceId { get; set; }
+
+    /// <summary>L/R channel mode applied to the capture source before routing.</summary>
+    public ChannelMode CaptureChannelMode { get; set; } = ChannelMode.Stereo;
+    public int CaptureChannels { get; set; } = 2;
 
     public AudioRouter(AudioCaptureEngine captureEngine)
     {
@@ -83,8 +80,6 @@ public class AudioRouter : IDisposable
             var active = _channels.Where(c => c.IsEnabled).ToList();
             if (active.Count == 0) return;
 
-            // Include capture source latency: the capture device plays audio natively,
-            // so output devices must be delayed to match its hardware latency.
             long captureLatency = 0;
             if (CaptureSourceDeviceId != null)
             {
@@ -93,14 +88,14 @@ public class AudioRouter : IDisposable
                     captureLatency = captureCh.GetEstimatedLatencyMs();
             }
 
-            long maxOutputLatency = active.Max(c => c.GetEstimatedLatencyMs());
-            long maxLatency = Math.Max(captureLatency, maxOutputLatency);
+            long maxLatency = Math.Max(captureLatency,
+                active.Max(c => c.GetEstimatedLatencyMs()));
 
             foreach (var channel in active)
             {
                 long deviceLatency = channel.GetEstimatedLatencyMs();
-                int compensationMs = (int)(maxLatency - deviceLatency) + _globalFineTuneMs;
-                channel.DelayMs = Math.Max(0, compensationMs);
+                int autoMs = (int)(maxLatency - deviceLatency);
+                channel.DelayMs = Math.Max(0, autoMs + channel.FineTuneMs);
             }
         }
     }
@@ -128,6 +123,18 @@ public class AudioRouter : IDisposable
 
     private void OnCaptureDataAvailable(object? sender, float[] samples)
     {
+        // Apply source-level L/R filter before routing to outputs
+        if (CaptureChannelMode != ChannelMode.Stereo && CaptureChannels >= 2)
+        {
+            int srcCh = CaptureChannelMode == ChannelMode.Left ? 1 : 0;
+            for (int i = 0; i < samples.Length; i += CaptureChannels)
+            {
+                float sample = samples[i + srcCh];
+                for (int ch = 0; ch < CaptureChannels; ch++)
+                    samples[i + ch] = sample;
+            }
+        }
+
         List<AudioOutputChannel> snapshot;
         lock (_lock) { snapshot = _channels.ToList(); }
 
