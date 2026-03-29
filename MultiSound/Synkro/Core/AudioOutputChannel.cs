@@ -225,12 +225,10 @@ public class AudioOutputChannel : IDisposable
 
             VolumeProcessor.Apply(workSamples, _processBuffer, workCount, _volume);
 
-            // L/R channel extraction: copy selected channel to all outputs
-            // Channel indices are intentionally swapped: Left=1, Right=0.
-            // WASAPI loopback on this hardware returns channels in reversed order.
+            // L/R channel extraction: Left=index 0, Right=index 1 (standard PCM interleaving)
             if (ChannelMode != ChannelMode.Stereo && _inputChannels >= 2)
             {
-                int srcCh = ChannelMode == ChannelMode.Left ? 1 : 0;
+                int srcCh = ChannelMode == ChannelMode.Left ? 0 : 1;
                 for (int i = 0; i < workCount; i += _inputChannels)
                 {
                     float sample = _processBuffer[i + srcCh];

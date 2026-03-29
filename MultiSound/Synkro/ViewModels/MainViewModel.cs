@@ -40,6 +40,9 @@ public class ChannelViewModel : INotifyPropertyChanged
     public bool IsBluetooth => _channel?.IsBluetooth ?? false;
     public string ErrorMessage => _channel?.ErrorMessage ?? string.Empty;
 
+    /// <summary>User-set base volume. System volume scaling applies on top.</summary>
+    public float BaseVolume { get; set; } = 1.0f;
+
     public float Volume
     {
         get => _channel?.Volume ?? 1.0f;
@@ -47,9 +50,18 @@ public class ChannelViewModel : INotifyPropertyChanged
         {
             if (_channel == null) return;
             _channel.Volume = value;
+            BaseVolume = value; // user manually set → update base
             OnPropertyChanged();
             _onSettingsChanged();
         }
+    }
+
+    /// <summary>Set volume from system sync without updating BaseVolume.</summary>
+    public void SetSyncedVolume(float vol)
+    {
+        if (_channel == null) return;
+        _channel.Volume = vol;
+        OnPropertyChanged(nameof(Volume));
     }
 
     public int FineTuneMs
@@ -208,10 +220,14 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
     private readonly AudioRouter _router;
     private readonly DeviceMonitorService _deviceMonitor;
     private readonly SettingsService _settingsService;
+    private readonly VolumeSyncService _volumeSync;
     private AppSettings _settings;
     private bool _isPlaying;
+    private bool _volumeSyncEnabled;
     private string _status = "Stopped";
     private CaptureDeviceItem? _selectedCaptureDevice;
+    private float _pendingScale;
+    private System.Threading.Timer? _syncDebounce;
 
     public ObservableCollection<ChannelViewModel> OutputSlots { get; } = new();
     public ObservableCollection<DeviceInfo> AvailableDevices { get; } = new();
@@ -253,6 +269,22 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
+    public bool VolumeSyncEnabled
+    {
+        get => _volumeSyncEnabled;
+        set
+        {
+            _volumeSyncEnabled = value;
+            if (value)
+            {
+                _volumeSync.MarkReferenceVolume();
+                foreach (var slot in OutputSlots)
+                    slot.BaseVolume = slot.Volume;
+            }
+            OnPropertyChanged();
+        }
+    }
+
     public ICommand StartStopCommand { get; }
     public ICommand AddDeviceCommand { get; }
 
@@ -263,6 +295,7 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
         _captureEngine = new AudioCaptureEngine();
         _router = new AudioRouter(_captureEngine);
         _deviceMonitor = new DeviceMonitorService();
+        _volumeSync = new VolumeSyncService();
 
         StartStopCommand = new RelayCommand(TogglePlayback);
         AddDeviceCommand = new RelayCommand(AddDevice);
@@ -270,10 +303,31 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
         _deviceMonitor.DeviceRemoved += OnDeviceRemoved;
         _deviceMonitor.DeviceAdded += OnDeviceAdded;
         _deviceMonitor.DefaultDeviceChanged += OnDefaultDeviceChanged;
+        _volumeSync.VolumeScaleChanged += OnSystemVolumeChanged;
+        _volumeSync.Start();
 
         LoadCaptureDevices();
         RefreshAvailableDevices();
         LoadOutputSlots();
+    }
+
+    private void OnSystemVolumeChanged(object? sender, float scale)
+    {
+        if (!_volumeSyncEnabled) return;
+
+        _pendingScale = scale;
+        _syncDebounce?.Dispose();
+        _syncDebounce = new System.Threading.Timer(_ =>
+        {
+            System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
+            {
+                foreach (var slot in OutputSlots)
+                {
+                    float newVol = Math.Clamp(slot.BaseVolume * _pendingScale, 0f, AudioOutputChannel.MaxVolume);
+                    slot.SetSyncedVolume(newVol);
+                }
+            });
+        }, null, 75, Timeout.Infinite);
     }
 
     private void LoadCaptureDevices()
@@ -495,6 +549,8 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private void SaveSettings()
     {
+        // User manually changed a setting → update volume sync reference
+        _volumeSync.MarkReferenceVolume();
         _settings.OutputSlots.Clear();
         foreach (var slot in OutputSlots)
         {
@@ -517,6 +573,8 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
     public void Dispose()
     {
         SaveSettings();
+        _syncDebounce?.Dispose();
+        _volumeSync.Dispose();
         _router.Dispose();
         _captureEngine.Dispose();
         _deviceMonitor.Dispose();

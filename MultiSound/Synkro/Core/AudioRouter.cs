@@ -140,16 +140,13 @@ public class AudioRouter : IDisposable
     {
         float[] workSamples = samples;
 
-        // Apply source-level L/R filter before routing to outputs.
-        // Channel indices are intentionally swapped: Left=1, Right=0.
-        // WASAPI loopback on this hardware returns channels in reversed order.
+        // Source-level L/R filter: Left=index 0, Right=index 1 (standard PCM)
         if (CaptureChannelMode != ChannelMode.Stereo && CaptureChannels >= 2)
         {
-            // Copy to avoid mutating the shared capture buffer
             workSamples = new float[samples.Length];
             Array.Copy(samples, workSamples, samples.Length);
 
-            int srcCh = CaptureChannelMode == ChannelMode.Left ? 1 : 0;
+            int srcCh = CaptureChannelMode == ChannelMode.Left ? 0 : 1;
             for (int i = 0; i < workSamples.Length; i += CaptureChannels)
             {
                 float sample = workSamples[i + srcCh];

@@ -383,6 +383,7 @@
                     <RowDefinition Height="*"/>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
                 <!-- Row 0: Source selector -->
@@ -521,8 +522,17 @@
                         Height="32" FontSize="12"
                         Margin="0,4,0,10"/>
 
-                <!-- Row 3: Start/Stop button -->
-                <Button Grid.Row="3"
+                <!-- Volume sync checkbox -->
+                <CheckBox Grid.Row="3" Style="{StaticResource ModernCheck}"
+                          IsChecked="{Binding VolumeSyncEnabled}"
+                          Margin="0,0,0,10">
+                    <TextBlock Text="Sync volume with system"
+                               Foreground="{StaticResource SubtextBrush}"
+                               FontSize="11"/>
+                </CheckBox>
+
+                <!-- Row 4: Start/Stop button -->
+                <Button Grid.Row="4"
                         Content="{Binding StartStopText}"
                         Command="{Binding StartStopCommand}"
                         Style="{StaticResource PrimaryBtn}"

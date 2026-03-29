@@ -1,0 +1,60 @@
+using NAudio.CoreAudioApi;
+
+namespace Synkro.Services;
+
+/// <summary>
+/// Monitors the default audio endpoint volume and fires scale events.
+/// When system volume changes, all output slots scale proportionally.
+/// </summary>
+public class VolumeSyncService : IDisposable
+{
+    private MMDeviceEnumerator? _enumerator;
+    private MMDevice? _defaultDevice;
+    private AudioEndpointVolume? _endpointVolume;
+    private float _referenceVolume;
+
+    /// <summary>
+    /// Fires when system volume changes. Parameter is the scale factor
+    /// relative to the reference volume (e.g., 0.5 means system went to 50% of reference).
+    /// </summary>
+    public event EventHandler<float>? VolumeScaleChanged;
+
+    public void Start()
+    {
+        try
+        {
+            _enumerator = new MMDeviceEnumerator();
+            _defaultDevice = _enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+            _endpointVolume = _defaultDevice.AudioEndpointVolume;
+            _referenceVolume = _endpointVolume.MasterVolumeLevelScalar;
+            _endpointVolume.OnVolumeNotification += OnVolumeNotification;
+        }
+        catch { }
+    }
+
+    /// <summary>
+    /// Record current system volume as the new baseline.
+    /// Call this when the user manually adjusts a slot volume in the app.
+    /// </summary>
+    public void MarkReferenceVolume()
+    {
+        _referenceVolume = _endpointVolume?.MasterVolumeLevelScalar ?? 1.0f;
+    }
+
+    private void OnVolumeNotification(AudioVolumeNotificationData data)
+    {
+        if (_referenceVolume <= 0.001f) return;
+        float scale = data.MasterVolume / _referenceVolume;
+        VolumeScaleChanged?.Invoke(this, scale);
+    }
+
+    public void Dispose()
+    {
+        if (_endpointVolume != null)
+            _endpointVolume.OnVolumeNotification -= OnVolumeNotification;
+        _endpointVolume = null;
+        _defaultDevice = null;
+        _enumerator?.Dispose();
+        _enumerator = null;
+    }
+}
