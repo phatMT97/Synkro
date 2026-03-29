@@ -253,9 +253,10 @@
                                 <Border Background="{StaticResource SurfaceBrush}"
                                         BorderBrush="{StaticResource BorderBrush}"
                                         BorderThickness="1" CornerRadius="6"
+                                        ClipToBounds="True"
                                         Padding="2" Margin="0,2,0,0"
                                         MaxHeight="200">
-                                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                    <ScrollViewer VerticalScrollBarVisibility="Hidden">
                                         <StackPanel IsItemsHost="True"/>
                                     </ScrollViewer>
                                 </Border>
