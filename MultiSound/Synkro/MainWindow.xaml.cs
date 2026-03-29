@@ -55,6 +55,7 @@ public partial class MainWindow : Window
         if (((Button)sender).Tag is ChannelViewModel slot && DataContext is MainViewModel vm)
             vm.RemoveDevice(slot);
     }
+
 }
 
 public class StringToVisibilityConverter : IValueConverter
@@ -69,3 +70,4 @@ public class StringToVisibilityConverter : IValueConverter
         throw new NotImplementedException();
     }
 }
+
