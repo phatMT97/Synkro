@@ -38,17 +38,13 @@ jobs:
           mv publish-light/Synkro.exe "publish-light/Synkro-${VERSION}-light.exe"
           mv publish-standalone/Synkro.exe "publish-standalone/Synkro-${VERSION}-standalone.exe"
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: true
-          body: |
-            ## Downloads
-
-            | File | Size | Requirement |
-            |------|------|-------------|
-            | `Synkro-${{ steps.version.outputs.tag }}-standalone.exe` | ~157MB | None — runs on any Windows 10/11 |
-            | `Synkro-${{ steps.version.outputs.tag }}-light.exe` | ~2MB | Requires [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0) |
-          files: |
-            publish-standalone/Synkro-${{ steps.version.outputs.tag }}-standalone.exe
-            publish-light/Synkro-${{ steps.version.outputs.tag }}-light.exe
+      - name: Upload assets to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          VERSION=${{ steps.version.outputs.tag }}
+          gh release upload "${VERSION}" \
+            "publish-standalone/Synkro-${VERSION}-standalone.exe" \
+            "publish-light/Synkro-${VERSION}-light.exe" \
+            --clobber
