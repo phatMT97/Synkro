@@ -38,13 +38,14 @@ jobs:
           mv publish-light/Synkro.exe "publish-light/Synkro-${VERSION}-light.exe"
           mv publish-standalone/Synkro.exe "publish-standalone/Synkro-${VERSION}-standalone.exe"
 
-      - name: Upload assets to release
+      - name: Create release and upload assets
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           VERSION=${{ steps.version.outputs.tag }}
-          gh release upload "${VERSION}" \
+          gh release create "${VERSION}" \
             "publish-standalone/Synkro-${VERSION}-standalone.exe" \
             "publish-light/Synkro-${VERSION}-light.exe" \
-            --clobber
+            --title "${VERSION}" \
+            --generate-notes
