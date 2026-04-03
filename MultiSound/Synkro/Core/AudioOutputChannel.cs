@@ -29,8 +29,15 @@ public class AudioOutputChannel : IDisposable
     // Resampling support for format-incompatible devices (e.g. FxSound virtual device)
     private bool _needsResample;
     private float _resampleRatio;
-    private int _inputChannels;
+    private int _inputChannels;   // capture source channel count (may be >2)
+    private int _outputChannels;  // actual output channel count (typically 2)
     private float[]? _resampleBuffer;
+    private float[]? _stereoBuffer; // for downmixing multichannel → stereo
+
+    // Endpoint volume boost for >100% volume
+    private AudioEndpointVolume? _endpointVolume;
+    private float _savedEndpointVolume = -1f;
+    private bool _endpointBoosted;
 
     public const float MaxVolume = 5.0f;
 
@@ -54,7 +61,11 @@ public class AudioOutputChannel : IDisposable
     public float Volume
     {
         get => _volume;
-        set => _volume = Math.Clamp(value, 0.0f, MaxVolume);
+        set
+        {
+            _volume = Math.Clamp(value, 0.0f, MaxVolume);
+            ApplyEndpointBoost();
+        }
     }
 
     public int DelayMs
@@ -71,6 +82,7 @@ public class AudioOutputChannel : IDisposable
     {
         _device = device;
         DetectBluetooth();
+        try { _endpointVolume = _device.AudioEndpointVolume; } catch { }
     }
 
     private void DetectBluetooth()
@@ -97,21 +109,25 @@ public class AudioOutputChannel : IDisposable
                 _waveFormat = captureFormat;
                 _needsResample = false;
                 _inputChannels = captureFormat.Channels;
+                _outputChannels = Math.Min(captureFormat.Channels, 2); // stereo output
                 _outputLatencyMs = IsBluetooth ? 100 : 30;
                 _output?.Stop();
                 _output?.Dispose();
                 _output = null;
 
-                // Build candidate formats: capture format first, then device mix format,
-                // then common fallbacks. Stops at the first one that works.
-                var candidates = new List<WaveFormat> { captureFormat };
+                // Build candidate formats using stereo output (device-native channel count).
+                // Multichannel capture (e.g. VB-Audio 16ch) is downmixed to stereo in WriteSamples.
+                int outCh = _outputChannels;
+                var candidates = new List<WaveFormat>
+                {
+                    WaveFormat.CreateIeeeFloatWaveFormat(captureFormat.SampleRate, outCh)
+                };
 
                 try
                 {
                     var mix = _device.AudioClient.MixFormat;
-                    var mixIeee = WaveFormat.CreateIeeeFloatWaveFormat(mix.SampleRate, captureFormat.Channels);
                     if (mix.SampleRate != captureFormat.SampleRate)
-                        candidates.Add(mixIeee);
+                        candidates.Add(WaveFormat.CreateIeeeFloatWaveFormat(mix.SampleRate, outCh));
                 }
                 catch { }
 
@@ -119,7 +135,7 @@ public class AudioOutputChannel : IDisposable
                 foreach (int rate in new[] { 48000, 44100 })
                 {
                     if (candidates.All(c => c.SampleRate != rate))
-                        candidates.Add(WaveFormat.CreateIeeeFloatWaveFormat(rate, captureFormat.Channels));
+                        candidates.Add(WaveFormat.CreateIeeeFloatWaveFormat(rate, outCh));
                 }
 
                 string? lastError = null;
@@ -150,9 +166,9 @@ public class AudioOutputChannel : IDisposable
                     _resampleRatio = (float)outSampleRate / captureFormat.SampleRate;
                 }
 
-                _delayBuffer = new DelayBuffer(outSampleRate, captureFormat.Channels, _delayMs);
+                _delayBuffer = new DelayBuffer(outSampleRate, outCh, _delayMs);
 
-                int maxSamples = (int)(outSampleRate * captureFormat.Channels * 0.1);
+                int maxSamples = (int)(outSampleRate * outCh * 0.1);
                 _processBuffer = new float[maxSamples];
                 _delayedBuffer = new float[maxSamples];
                 _byteBuffer = new byte[maxSamples * 4];
@@ -210,9 +226,30 @@ public class AudioOutputChannel : IDisposable
             float[] workSamples = samples;
             int workCount = count;
 
+            // Downmix multichannel capture (e.g. 16ch VB-Audio) to stereo.
+            // Extract channels 0 (L) and 1 (R) from the interleaved source.
+            if (_inputChannels > _outputChannels)
+            {
+                int frames = workCount / _inputChannels;
+                int stereoCount = frames * _outputChannels;
+                if (_stereoBuffer == null || _stereoBuffer.Length < stereoCount)
+                    _stereoBuffer = new float[stereoCount];
+
+                for (int f = 0; f < frames; f++)
+                {
+                    int srcOff = f * _inputChannels;
+                    int dstOff = f * _outputChannels;
+                    for (int ch = 0; ch < _outputChannels; ch++)
+                        _stereoBuffer[dstOff + ch] = workSamples[srcOff + ch];
+                }
+
+                workSamples = _stereoBuffer;
+                workCount = stereoCount;
+            }
+
             if (_needsResample)
             {
-                workCount = Resample(samples, count);
+                workCount = Resample(workSamples, workCount);
                 workSamples = _resampleBuffer!;
             }
 
@@ -226,13 +263,13 @@ public class AudioOutputChannel : IDisposable
             VolumeProcessor.Apply(workSamples, _processBuffer, workCount, _volume);
 
             // L/R channel extraction: Left=index 0, Right=index 1 (standard PCM interleaving)
-            if (ChannelMode != ChannelMode.Stereo && _inputChannels >= 2)
+            if (ChannelMode != ChannelMode.Stereo && _outputChannels >= 2)
             {
                 int srcCh = ChannelMode == ChannelMode.Left ? 0 : 1;
-                for (int i = 0; i < workCount; i += _inputChannels)
+                for (int i = 0; i < workCount; i += _outputChannels)
                 {
                     float sample = _processBuffer[i + srcCh];
-                    for (int ch = 0; ch < _inputChannels; ch++)
+                    for (int ch = 0; ch < _outputChannels; ch++)
                         _processBuffer[i + ch] = sample;
                 }
             }
@@ -254,7 +291,7 @@ public class AudioOutputChannel : IDisposable
     /// </summary>
     private int Resample(float[] input, int inputCount)
     {
-        int channels = _inputChannels;
+        int channels = _outputChannels;
         int inputFrames = inputCount / channels;
         int outputFrames = (int)(inputFrames * _resampleRatio);
         int outputCount = outputFrames * channels;
@@ -293,13 +330,53 @@ public class AudioOutputChannel : IDisposable
         lock (_writeLock)
         {
             _output?.Stop();
+            RestoreEndpointVolume();
         }
+    }
+
+    /// <summary>
+    /// Gradually scale device endpoint volume for boost above 100%.
+    /// At 100%: endpoint stays at original. At 500%: endpoint at max (1.0).
+    /// Linear interpolation between — no sudden jumps.
+    /// </summary>
+    private void ApplyEndpointBoost()
+    {
+        if (_endpointVolume == null) return;
+        try
+        {
+            if (_volume > 1.0f)
+            {
+                if (!_endpointBoosted)
+                {
+                    _savedEndpointVolume = _endpointVolume.MasterVolumeLevelScalar;
+                    _endpointBoosted = true;
+                }
+                float t = (_volume - 1.0f) / (MaxVolume - 1.0f);
+                float target = _savedEndpointVolume + (1.0f - _savedEndpointVolume) * t;
+                _endpointVolume.MasterVolumeLevelScalar = target;
+            }
+            else if (_endpointBoosted)
+            {
+                if (_savedEndpointVolume >= 0f)
+                    _endpointVolume.MasterVolumeLevelScalar = _savedEndpointVolume;
+                _endpointBoosted = false;
+            }
+        }
+        catch { }
+    }
+
+    private void RestoreEndpointVolume()
+    {
+        if (!_endpointBoosted || _endpointVolume == null || _savedEndpointVolume < 0f) return;
+        try { _endpointVolume.MasterVolumeLevelScalar = _savedEndpointVolume; } catch { }
+        _endpointBoosted = false;
     }
 
     public void Dispose()
     {
         lock (_writeLock)
         {
+            RestoreEndpointVolume();
             _output?.Stop();
             _output?.Dispose();
             _output = null;

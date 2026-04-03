@@ -5,6 +5,8 @@ namespace Synkro.Services;
 /// <summary>
 /// Monitors the default audio endpoint volume and fires scale events.
 /// When system volume changes, all output slots scale proportionally.
+/// Uses polling for compatibility with virtual audio devices (e.g. VB-Audio)
+/// that may not fire COM volume notifications.
 /// </summary>
 public class VolumeSyncService : IDisposable
 {
@@ -12,6 +14,11 @@ public class VolumeSyncService : IDisposable
     private MMDevice? _defaultDevice;
     private AudioEndpointVolume? _endpointVolume;
     private float _referenceVolume;
+    private float _lastVolume;
+    private Timer? _pollTimer;
+
+    private const int PollIntervalMs = 100;
+    private const float ChangeThreshold = 0.001f;
 
     /// <summary>
     /// Fires when system volume changes. Parameter is the scale factor
@@ -27,7 +34,9 @@ public class VolumeSyncService : IDisposable
             _defaultDevice = _enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
             _endpointVolume = _defaultDevice.AudioEndpointVolume;
             _referenceVolume = _endpointVolume.MasterVolumeLevelScalar;
-            _endpointVolume.OnVolumeNotification += OnVolumeNotification;
+            _lastVolume = _referenceVolume;
+
+            _pollTimer = new Timer(PollVolume, null, PollIntervalMs, PollIntervalMs);
         }
         catch { }
     }
@@ -38,20 +47,35 @@ public class VolumeSyncService : IDisposable
     /// </summary>
     public void MarkReferenceVolume()
     {
-        _referenceVolume = _endpointVolume?.MasterVolumeLevelScalar ?? 1.0f;
+        try
+        {
+            var vol = _endpointVolume?.MasterVolumeLevelScalar ?? 1.0f;
+            _referenceVolume = vol;
+            _lastVolume = vol;
+        }
+        catch { }
     }
 
-    private void OnVolumeNotification(AudioVolumeNotificationData data)
+    private void PollVolume(object? state)
     {
-        if (_referenceVolume <= 0.001f) return;
-        float scale = data.MasterVolume / _referenceVolume;
-        VolumeScaleChanged?.Invoke(this, scale);
+        try
+        {
+            if (_endpointVolume == null || _referenceVolume <= 0.001f) return;
+
+            float current = _endpointVolume.MasterVolumeLevelScalar;
+            if (MathF.Abs(current - _lastVolume) < ChangeThreshold) return;
+
+            _lastVolume = current;
+            float scale = current / _referenceVolume;
+            VolumeScaleChanged?.Invoke(this, scale);
+        }
+        catch { }
     }
 
     public void Dispose()
     {
-        if (_endpointVolume != null)
-            _endpointVolume.OnVolumeNotification -= OnVolumeNotification;
+        _pollTimer?.Dispose();
+        _pollTimer = null;
         _endpointVolume = null;
         _defaultDevice = null;
         _enumerator?.Dispose();
