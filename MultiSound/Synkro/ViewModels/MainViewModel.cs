@@ -228,6 +228,7 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
     private CaptureDeviceItem? _selectedCaptureDevice;
     private float _pendingScale;
     private System.Threading.Timer? _syncDebounce;
+    private System.Threading.Timer? _saveSettingsTimer;
 
     public ObservableCollection<ChannelViewModel> OutputSlots { get; } = new();
     public ObservableCollection<DeviceInfo> AvailableDevices { get; } = new();
@@ -261,7 +262,7 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
             if (value != null)
             {
                 _settings.CaptureDeviceId = value.IsDefault ? null : value.Id;
-                _settingsService.Save(_settings);
+                SaveSettings();
             }
 
             if (IsPlaying)
@@ -327,7 +328,7 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
                     slot.SetSyncedVolume(newVol);
                 }
             });
-        }, null, 75, Timeout.Infinite);
+        }, null, 15, Timeout.Infinite);
     }
 
     private void LoadCaptureDevices()
@@ -526,9 +527,11 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private void OnDefaultDeviceChanged(object? sender, string defaultDeviceId)
     {
-        if (IsPlaying)
+        System.Windows.Application.Current?.Dispatcher.Invoke(() =>
         {
-            System.Windows.Application.Current?.Dispatcher.Invoke(() =>
+            _volumeSync.Restart();
+ 
+            if (IsPlaying)
             {
                 // Only auto-restart capture if using Auto (default) mode
                 if (_selectedCaptureDevice == null || _selectedCaptureDevice.IsDefault)
@@ -539,12 +542,12 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
                     _router.InitializeAll();
                     _router.StartAll();
                     _router.ApplyAutoDelay();
-
+ 
                     foreach (var slot in OutputSlots)
                         slot.RefreshDelay();
                 }
-            });
-        }
+            }
+        });
     }
 
     private void SaveSettings()
@@ -563,16 +566,37 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
                 ChannelMode = (int)slot.ChannelMode
             });
         }
-        _settingsService.Save(_settings);
+ 
+        // Serialize to JSON string immediately (fast & thread-safe)
+        var json = System.Text.Json.JsonSerializer.Serialize(_settings, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+ 
+        // Debounce actual disk writing to prevent blocking UI/audio threads
+        _saveSettingsTimer?.Dispose();
+        _saveSettingsTimer = new System.Threading.Timer(_ =>
+        {
+            try
+            {
+                _settingsService.SaveJson(json);
+            }
+            catch { }
+        }, null, 500, Timeout.Infinite);
     }
-
+ 
     public event PropertyChangedEventHandler? PropertyChanged;
     protected void OnPropertyChanged([CallerMemberName] string? name = null)
         => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
-
+ 
     public void Dispose()
     {
-        SaveSettings();
+        // Flush any unsaved settings synchronously on exit
+        _saveSettingsTimer?.Dispose();
+        _saveSettingsTimer = null;
+        try
+        {
+            _settingsService.Save(_settings);
+        }
+        catch { }
+ 
         _syncDebounce?.Dispose();
         _volumeSync.Dispose();
         _router.Dispose();

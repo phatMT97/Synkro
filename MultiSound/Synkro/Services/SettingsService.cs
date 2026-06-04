@@ -43,9 +43,14 @@ public class SettingsService
 
     public void Save(AppSettings settings)
     {
+        var json = JsonSerializer.Serialize(settings, JsonOptions);
+        SaveJson(json);
+    }
+
+    public void SaveJson(string json)
+    {
         var dir = Path.GetDirectoryName(_filePath)!;
         Directory.CreateDirectory(dir);
-        var json = JsonSerializer.Serialize(settings, JsonOptions);
         var tempPath = _filePath + ".tmp";
         File.WriteAllText(tempPath, json);
         File.Move(tempPath, _filePath, overwrite: true);

@@ -46,6 +46,11 @@ To split stereo across 2 speakers (one Left, one Right):
 
 Without a virtual device, the capture source always plays native stereo audio (from the OS). L/R filtering only works on output devices routed through Synkro.
 
+### Using FxSound with L/R Separation
+If you route audio through **FxSound** (e.g., Windows default output is FxSound, which outputs to VB-Cable):
+- FxSound's spatial effects will mix the Left and Right channels before they reach Synkro.
+- To prevent this channel bleed, open the FxSound main window and set the **Surround Sound** and **Ambience** sliders to **0** (or turn them off). This ensures FxSound processes Left and Right channels independently, allowing Synkro to split them cleanly.
+
 ## Per-device fine-tune
 
 Auto-delay compensates for Bluetooth vs wired latency differences. If sync still isn't perfect:

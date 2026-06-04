@@ -76,11 +76,24 @@ public class AudioCaptureEngine : IDisposable
 
     public void Dispose()
     {
+        WasapiLoopbackCapture? captureToDispose = null;
         lock (_captureLock)
         {
-            _capture?.StopRecording();
-            _capture?.Dispose();
+            captureToDispose = _capture;
             _capture = null;
+        }
+
+        if (captureToDispose != null)
+        {
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                try
+                {
+                    captureToDispose.StopRecording();
+                    captureToDispose.Dispose();
+                }
+                catch { }
+            });
         }
     }
 }

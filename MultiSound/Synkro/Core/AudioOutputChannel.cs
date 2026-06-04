@@ -21,6 +21,7 @@ public class AudioOutputChannel : IDisposable
     private volatile int _delayMs;
     private WaveFormat? _waveFormat;
     private int _outputLatencyMs;
+    private byte[]? _garbageBuffer;
 
     private float[]? _processBuffer;
     private float[]? _delayedBuffer;
@@ -110,7 +111,6 @@ public class AudioOutputChannel : IDisposable
                 _needsResample = false;
                 _inputChannels = captureFormat.Channels;
                 _outputChannels = Math.Min(captureFormat.Channels, 2); // stereo output
-                _outputLatencyMs = IsBluetooth ? 100 : 30;
                 _output?.Stop();
                 _output?.Dispose();
                 _output = null;
@@ -143,11 +143,18 @@ public class AudioOutputChannel : IDisposable
 
                 foreach (var fmt in candidates)
                 {
-                    // Try event-driven mode first (lower latency)
+                    // 1. Try low latency with event-driven mode (best performance)
+                    _outputLatencyMs = IsBluetooth ? 80 : 30;
                     lastError = TryInitOutput(fmt, useEventSync: true);
                     if (lastError == null) { successFormat = fmt; break; }
 
-                    // Try timer-driven mode (more compatible)
+                    // 2. Try standard latency with timer-driven mode (highly compatible)
+                    _outputLatencyMs = IsBluetooth ? 100 : 40;
+                    lastError = TryInitOutput(fmt, useEventSync: false);
+                    if (lastError == null) { successFormat = fmt; break; }
+
+                    // 3. Try high latency with timer-driven mode (fallback for virtual/problematic drivers)
+                    _outputLatencyMs = IsBluetooth ? 150 : 60;
                     lastError = TryInitOutput(fmt, useEventSync: false);
                     if (lastError == null) { successFormat = fmt; break; }
                 }
@@ -281,6 +288,35 @@ public class AudioOutputChannel : IDisposable
                 _delayedBuffer![i] = Math.Clamp(_delayedBuffer[i], -1.0f, 1.0f);
 
             Buffer.BlockCopy(_delayedBuffer!, 0, _byteBuffer!, 0, workCount * 4);
+
+            // Active buffer management to prevent clock drift and startup delay accumulation.
+            // Dynamically scale thresholds based on the incoming capture block size.
+            int sampleRate = _bufferedProvider.WaveFormat.SampleRate;
+            int channels = _bufferedProvider.WaveFormat.Channels;
+            int writeDurationMs = (workCount * 1000) / (sampleRate * channels);
+
+            int targetMs = _outputLatencyMs + (int)(writeDurationMs * 1.5f);
+            int maxMs = _outputLatencyMs + (writeDurationMs * 3);
+
+            int currentBufferedBytes = _bufferedProvider.BufferedBytes;
+            int maxBufferedBytes = (int)((long)maxMs * _bufferedProvider.WaveFormat.AverageBytesPerSecond / 1000);
+            if (currentBufferedBytes > maxBufferedBytes)
+            {
+                int targetBufferedBytes = (int)((long)targetMs * _bufferedProvider.WaveFormat.AverageBytesPerSecond / 1000);
+                int bytesToDiscard = currentBufferedBytes - targetBufferedBytes;
+                int blockAlign = _bufferedProvider.WaveFormat.BlockAlign;
+                bytesToDiscard = (bytesToDiscard / blockAlign) * blockAlign;
+
+                if (bytesToDiscard > 0)
+                {
+                    if (_garbageBuffer == null || _garbageBuffer.Length < bytesToDiscard)
+                    {
+                        _garbageBuffer = new byte[bytesToDiscard];
+                    }
+                    _bufferedProvider.Read(_garbageBuffer, 0, bytesToDiscard);
+                }
+            }
+
             _bufferedProvider.AddSamples(_byteBuffer!, 0, workCount * 4);
         }
     }
@@ -374,13 +410,26 @@ public class AudioOutputChannel : IDisposable
 
     public void Dispose()
     {
+        WasapiOut? outputToDispose = null;
         lock (_writeLock)
         {
             RestoreEndpointVolume();
-            _output?.Stop();
-            _output?.Dispose();
+            outputToDispose = _output;
             _output = null;
             _bufferedProvider = null;
+        }
+
+        if (outputToDispose != null)
+        {
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                try
+                {
+                    outputToDispose.Stop();
+                    outputToDispose.Dispose();
+                }
+                catch { }
+            });
         }
     }
 }
